@@ -239,18 +239,12 @@ function GrandTotalBanner({ report }: { report: ReportResult }) {
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-6">
-          <div>
-            <div className="text-[11px] uppercase tracking-wider text-sky-200/80">In period</div>
-            <div className="text-3xl font-bold tabular-nums">
-              {formatHours(grandTotal.secondsInPeriod)}
-            </div>
+        <div className="flex items-baseline gap-3">
+          <div className="text-3xl font-bold tabular-nums">
+            {formatHours(grandTotal.secondsInPeriod)}
           </div>
-          <div>
-            <div className="text-[11px] uppercase tracking-wider text-sky-200/80">All time</div>
-            <div className="text-3xl font-bold tabular-nums text-slate-300">
-              {formatHours(grandTotal.secondsAllTime)}
-            </div>
+          <div className="text-sm text-slate-400 tabular-nums whitespace-nowrap">
+            / {formatHours(grandTotal.secondsAllTime)} all time
           </div>
         </div>
       </div>
@@ -310,18 +304,12 @@ function TreeRollupBanner({ rollup, tree }: { rollup: TreeRollup; tree: PmTree }
             {summary} - {rollup.issuesCount} unique issue(s)
           </div>
         </div>
-        <div className="flex items-center gap-5">
-          <div className="text-right">
-            <div className="text-[10px] uppercase tracking-wider text-slate-500">In period</div>
-            <div className="text-xl font-bold tabular-nums text-sky-800">
-              {formatHours(rollup.secondsInPeriod)}
-            </div>
+        <div className="flex items-baseline gap-2">
+          <div className="text-xl font-bold tabular-nums text-sky-800">
+            {formatHours(rollup.secondsInPeriod)}
           </div>
-          <div className="text-right">
-            <div className="text-[10px] uppercase tracking-wider text-slate-500">All time</div>
-            <div className="text-xl font-bold tabular-nums text-slate-700">
-              {formatHours(rollup.secondsAllTime)}
-            </div>
+          <div className="text-[11px] text-slate-400 tabular-nums whitespace-nowrap">
+            / {formatHours(rollup.secondsAllTime)} all time
           </div>
         </div>
       </div>

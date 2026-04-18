@@ -2,10 +2,8 @@ import { useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
-  Clock,
   ExternalLink,
   GitBranch,
-  Layers,
   Users as UsersIcon,
 } from 'lucide-react';
 import type { IssueNode } from '../types';
@@ -70,16 +68,10 @@ export function IssueNodeCard({ node, depth, rootBadge = null }: Props) {
               <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
             </a>
 
-            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <MetricCard
-                label="Total (all time)"
-                value={formatHours(node.totalSecondsAllTime)}
-                accent={false}
-              />
-              <MetricCard
-                label="In selected period"
-                value={formatHours(node.totalSecondsInPeriod)}
-                accent
+            <div className="mt-3">
+              <PeriodMetric
+                periodValue={formatHours(node.totalSecondsInPeriod)}
+                allTimeValue={formatHours(node.totalSecondsAllTime)}
               />
             </div>
 
@@ -139,28 +131,17 @@ export function IssueNodeCard({ node, depth, rootBadge = null }: Props) {
   );
 }
 
-function MetricCard({
-  label,
-  value,
-  accent,
+function PeriodMetric({
+  periodValue,
+  allTimeValue,
 }: {
-  label: string;
-  value: string;
-  accent: boolean;
+  periodValue: string;
+  allTimeValue: string;
 }) {
   return (
-    <div
-      className={`px-3 py-2.5 rounded-lg border ${
-        accent
-          ? 'bg-sky-50 border-sky-200 text-sky-900'
-          : 'bg-slate-50 border-slate-200 text-slate-800'
-      }`}
-    >
-      <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide opacity-70">
-        {accent ? <Clock className="w-3 h-3" /> : <Layers className="w-3 h-3" />}
-        {label}
-      </div>
-      <div className="text-xl font-bold tabular-nums mt-0.5">{value}</div>
+    <div className="flex items-baseline gap-2">
+      <span className="text-2xl font-bold tabular-nums text-sky-700">{periodValue}</span>
+      <span className="text-xs text-slate-400 tabular-nums">/ {allTimeValue} all time</span>
     </div>
   );
 }
