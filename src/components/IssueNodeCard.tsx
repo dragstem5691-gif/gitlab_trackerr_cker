@@ -54,7 +54,7 @@ export function IssueNodeCard({ node, depth, rootBadge = null }: Props) {
             <div className="flex flex-wrap items-center gap-2 mb-1">
               <ProjectBadge name={node.issue.projectName} />
               <span className="text-xs font-mono text-slate-500">#{node.issue.iid}</span>
-              {rootBadge === 'pm-root' && <Tag color="sky">PM root</Tag>}
+              {rootBadge === 'pm-root' && <Tag color="sky">PM issue</Tag>}
               {rootBadge === 'standalone' && <Tag color="amber">Standalone</Tag>}
               {node.isShared && <Tag color="emerald">Shared</Tag>}
               {node.isContextOnly && <Tag color="slate">Context only</Tag>}

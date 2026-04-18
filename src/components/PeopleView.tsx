@@ -9,8 +9,8 @@ interface Props {
 }
 
 export function PeopleView({ people, grandTotalSecondsInPeriod }: Props) {
-  const ranked = people.filter((p) => p.secondsInPeriod > 0);
-  const zeroInPeriod = people.filter((p) => p.secondsInPeriod === 0);
+  const ranked = people.filter((person) => person.secondsInPeriod > 0);
+  const zeroInPeriod = people.filter((person) => person.secondsInPeriod === 0);
 
   if (ranked.length === 0 && zeroInPeriod.length === 0) {
     return (
@@ -34,14 +34,14 @@ export function PeopleView({ people, grandTotalSecondsInPeriod }: Props) {
           People ranking (by selected period)
         </div>
         <p className="mt-1 text-xs text-slate-500">
-          Hours are aggregated across every tree and standalone item in the report.
+          Hours are aggregated across every PM cluster and standalone item in the report.
         </p>
 
         <ul className="mt-5 space-y-3">
-          {ranked.map((p, index) => (
+          {ranked.map((person, index) => (
             <PersonRow
-              key={p.userId}
-              person={p}
+              key={person.userId}
+              person={person}
               index={index + 1}
               totalSecondsInPeriod={grandTotalSecondsInPeriod}
             />
@@ -55,18 +55,18 @@ export function PeopleView({ people, grandTotalSecondsInPeriod }: Props) {
             Contributors without hours in this period ({zeroInPeriod.length})
           </summary>
           <ul className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {zeroInPeriod.map((p) => (
+            {zeroInPeriod.map((person) => (
               <li
-                key={p.userId}
+                key={person.userId}
                 className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-slate-50 border border-slate-100"
               >
-                <Avatar name={p.userName} url={p.userAvatarUrl} size={6} />
+                <Avatar name={person.userName} url={person.userAvatarUrl} size={6} />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-slate-800 truncate">
-                    {p.userName}
+                    {person.userName}
                   </div>
                   <div className="text-[11px] text-slate-500">
-                    All time: {formatHours(p.secondsAllTime)}
+                    All time: {formatHours(person.secondsAllTime)}
                   </div>
                 </div>
               </li>
@@ -88,13 +88,14 @@ function PersonRow({
   totalSecondsInPeriod: number;
 }) {
   const [open, setOpen] = useState(false);
-  const share = totalSecondsInPeriod > 0 ? (person.secondsInPeriod / totalSecondsInPeriod) * 100 : 0;
+  const share =
+    totalSecondsInPeriod > 0 ? (person.secondsInPeriod / totalSecondsInPeriod) * 100 : 0;
 
   return (
     <li className="rounded-xl border border-slate-200 bg-white hover:shadow-sm transition overflow-hidden">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setOpen((value) => !value)}
         className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-slate-50 transition"
       >
         <div className="shrink-0 w-7 text-center text-sm font-bold text-slate-500 tabular-nums">
@@ -122,41 +123,44 @@ function PersonRow({
             {formatHours(person.secondsInPeriod)}
           </div>
           <div className="text-[11px] text-slate-500 tabular-nums">
-            {share.toFixed(1)}% · all time {formatHours(person.secondsAllTime)}
+            {share.toFixed(1)}% | all time {formatHours(person.secondsAllTime)}
           </div>
         </div>
         <div className="shrink-0 text-slate-400">
           {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
         </div>
       </button>
+
       {open && (
         <div className="border-t border-slate-100 bg-slate-50/60 px-4 py-3">
           {person.issueBreakdown.length === 0 ? (
             <div className="text-xs text-slate-500">No issue-level breakdown available.</div>
           ) : (
             <ul className="space-y-1.5">
-              {person.issueBreakdown.map((b) => (
+              {person.issueBreakdown.map((breakdown) => (
                 <li
-                  key={b.issueId}
+                  key={breakdown.issueId}
                   className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-white border border-slate-100"
                 >
                   <div className="min-w-0 flex items-center gap-2">
                     <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-slate-100 text-[10px] font-medium text-slate-600">
-                      {b.projectName}
+                      {breakdown.projectName}
                     </span>
-                    <span className="text-xs font-mono text-slate-500">#{b.issueIid}</span>
+                    <span className="text-xs font-mono text-slate-500">
+                      #{breakdown.issueIid}
+                    </span>
                     <a
-                      href={b.issueWebUrl}
+                      href={breakdown.issueWebUrl}
                       target="_blank"
                       rel="noreferrer"
                       className="inline-flex items-center gap-1 text-sm font-medium text-slate-800 hover:text-sky-700 transition truncate"
                     >
-                      <span className="truncate">{b.issueTitle}</span>
+                      <span className="truncate">{breakdown.issueTitle}</span>
                       <ExternalLink className="w-3 h-3 text-slate-400 shrink-0" />
                     </a>
                   </div>
                   <div className="text-sm font-semibold text-sky-700 tabular-nums whitespace-nowrap">
-                    {formatHours(b.secondsInPeriod)}
+                    {formatHours(breakdown.secondsInPeriod)}
                   </div>
                 </li>
               ))}
@@ -171,16 +175,18 @@ function PersonRow({
 function Avatar({ name, url, size }: { name: string; url?: string; size: number }) {
   const initials = name
     .split(' ')
-    .map((p) => p[0])
+    .map((part) => part[0])
     .filter(Boolean)
     .slice(0, 2)
     .join('')
     .toUpperCase();
   const px = size * 4;
   const style = { width: `${px}px`, height: `${px}px` };
+
   if (url) {
     return <img src={url} alt={name} style={style} className="rounded-full object-cover" />;
   }
+
   return (
     <div
       style={style}

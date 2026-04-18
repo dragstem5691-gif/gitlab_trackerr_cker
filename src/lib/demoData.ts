@@ -39,6 +39,7 @@ export const DEMO_ISSUES: RawIssue[] = [
       entry('t-pm101-2', 'gid://gitlab/Issue/PM-101', U3, 3, '2026-04-11T10:00:00+05:00'),
     ],
     linkedIssueIds: [
+      'gid://gitlab/Issue/PM-102',
       'gid://gitlab/Issue/BE-201',
       'gid://gitlab/Issue/FE-301',
       'gid://gitlab/Issue/QA-401',

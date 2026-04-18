@@ -59,6 +59,20 @@ export function isTimestampInPeriod(entryTs: number, bounds: PeriodBounds): bool
   return entryTs >= bounds.startTs && entryTs <= bounds.endTs;
 }
 
+export function extractSpentAtDate(spentAtIso: string): string | null {
+  const match = spentAtIso.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (match) return match[1];
+
+  const parsed = new Date(spentAtIso);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10);
+}
+
 export function isInPeriod(spentAtIso: string, startDate: string, endDate: string): boolean {
+  const spentDate = extractSpentAtDate(spentAtIso);
+  if (spentDate) {
+    return spentDate >= startDate && spentDate <= endDate;
+  }
+
   return isTimestampInPeriod(new Date(spentAtIso).getTime(), getPeriodBounds(startDate, endDate));
 }

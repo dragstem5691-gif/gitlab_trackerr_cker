@@ -36,6 +36,16 @@ interface LinkedIssueRef {
   iid: string;
 }
 
+interface PmComponent {
+  pmIssues: IssueStub[];
+  linkedRefs: LinkedIssueRef[];
+}
+
+interface ProjectPeriodIssuesResult {
+  issues: Map<string, RawIssue>;
+  skippedNonIssueTimelogs: number;
+}
+
 const ISSUE_PAGE_SIZE = 100;
 const TIMELOG_PAGE_SIZE = 100;
 const ISSUE_LINKS_PAGE_SIZE = 100;
@@ -45,6 +55,11 @@ const FULL_ISSUE_FETCH_CONCURRENCY = 8;
 
 const projectIssueCatalogCache = new Map<string, Promise<IssueStub[]>>();
 const issueLinksCache = new Map<string, Promise<LinkedIssueRef[]>>();
+
+export interface LoadReportDataResult {
+  issues: RawIssue[];
+  warnings: string[];
+}
 
 function issueRefKey(projectPath: string, iid: string) {
   return `${projectPath}#${iid}`;
@@ -56,6 +71,78 @@ function projectCacheKey(instanceOrigin: string, projectPath: string) {
 
 function issueLinkCacheKey(instanceOrigin: string, projectPath: string, iid: string) {
   return `${instanceOrigin}|${projectPath}#${iid}`;
+}
+
+function buildPmComponents(
+  pmIssueStubs: IssueStub[],
+  linksByPmIssueId: Map<string, LinkedIssueRef[]>
+): PmComponent[] {
+  const orderByIssueId = new Map<string, number>();
+  const pmIssueById = new Map<string, IssueStub>();
+  const pmIssueByRef = new Map<string, IssueStub>();
+  const adjacency = new Map<string, Set<string>>();
+
+  pmIssueStubs.forEach((issue, index) => {
+    orderByIssueId.set(issue.id, index);
+    pmIssueById.set(issue.id, issue);
+    pmIssueByRef.set(issueRefKey(issue.projectPath, issue.iid), issue);
+    adjacency.set(issue.id, new Set());
+  });
+
+  for (const issue of pmIssueStubs) {
+    for (const link of linksByPmIssueId.get(issue.id) || []) {
+      const linkedPmIssue = pmIssueByRef.get(issueRefKey(link.projectPath, link.iid));
+      if (!linkedPmIssue) continue;
+      adjacency.get(issue.id)?.add(linkedPmIssue.id);
+      adjacency.get(linkedPmIssue.id)?.add(issue.id);
+    }
+  }
+
+  const visited = new Set<string>();
+  const components: PmComponent[] = [];
+
+  for (const issue of pmIssueStubs) {
+    if (visited.has(issue.id)) continue;
+
+    const stack = [issue.id];
+    const componentIssueIds: string[] = [];
+    visited.add(issue.id);
+
+    while (stack.length > 0) {
+      const currentIssueId = stack.pop()!;
+      componentIssueIds.push(currentIssueId);
+
+      for (const linkedIssueId of adjacency.get(currentIssueId) || []) {
+        if (visited.has(linkedIssueId)) continue;
+        visited.add(linkedIssueId);
+        stack.push(linkedIssueId);
+      }
+    }
+
+    componentIssueIds.sort(
+      (left, right) =>
+        (orderByIssueId.get(left) ?? Number.MAX_SAFE_INTEGER) -
+        (orderByIssueId.get(right) ?? Number.MAX_SAFE_INTEGER)
+    );
+
+    const componentPmIssues = componentIssueIds
+      .map((issueId) => pmIssueById.get(issueId))
+      .filter((issue): issue is IssueStub => Boolean(issue));
+
+    const linkedRefs = new Map<string, LinkedIssueRef>();
+    for (const componentPmIssue of componentPmIssues) {
+      for (const link of linksByPmIssueId.get(componentPmIssue.id) || []) {
+        linkedRefs.set(issueRefKey(link.projectPath, link.iid), link);
+      }
+    }
+
+    components.push({
+      pmIssues: componentPmIssues,
+      linkedRefs: Array.from(linkedRefs.values()),
+    });
+  }
+
+  return components;
 }
 
 function stubToRawIssue(stub: IssueStub, timelogs: TimeEntry[] = []): RawIssue {
@@ -70,6 +157,29 @@ function stubToRawIssue(stub: IssueStub, timelogs: TimeEntry[] = []): RawIssue {
     totalTimeSpentSeconds: stub.totalTimeSpentSeconds,
     timelogs,
     linkedIssueIds: [],
+  };
+}
+
+function mergeIssueData(primary: RawIssue, secondary: RawIssue): RawIssue {
+  const timelogById = new Map<string, TimeEntry>();
+
+  for (const timelog of primary.timelogs) {
+    timelogById.set(timelog.id, timelog);
+  }
+  for (const timelog of secondary.timelogs) {
+    timelogById.set(timelog.id, timelog);
+  }
+
+  const linkedIssueIds = new Set<string>(primary.linkedIssueIds);
+  for (const linkedIssueId of secondary.linkedIssueIds) {
+    linkedIssueIds.add(linkedIssueId);
+  }
+
+  return {
+    ...primary,
+    totalTimeSpentSeconds: primary.totalTimeSpentSeconds || secondary.totalTimeSpentSeconds,
+    timelogs: Array.from(timelogById.values()),
+    linkedIssueIds: Array.from(linkedIssueIds),
   };
 }
 
@@ -286,9 +396,8 @@ export class GitLabClient {
     projectPath: string,
     startDate: string,
     endDate: string,
-    allowedRefs: Set<string> | undefined,
     logger?: BuildLogger
-  ): Promise<Map<string, RawIssue>> {
+  ): Promise<ProjectPeriodIssuesResult> {
     const query = `
       query ProjectTimelogs($fullPath: ID!, $startDate: Time!, $endDate: Time!, $after: String) {
         project(fullPath: $fullPath) {
@@ -337,7 +446,6 @@ export class GitLabClient {
     let cursor: string | null = null;
     let page = 0;
     let skippedNonIssueTimelogs = 0;
-    let filteredOutTimelogs = 0;
 
     while (true) {
       page += 1;
@@ -357,11 +465,6 @@ export class GitLabClient {
         }
 
         const key = issueRefKey(data.project.fullPath, node.issue.iid);
-        if (allowedRefs && !allowedRefs.has(key)) {
-          filteredOutTimelogs += 1;
-          continue;
-        }
-
         let issue = issuesByRef.get(key);
         if (!issue) {
           issue = stubToRawIssue({
@@ -389,23 +492,25 @@ export class GitLabClient {
       cursor = data.project.timelogs.pageInfo.endCursor;
     }
 
-    if (filteredOutTimelogs > 0) {
-      logger?.info(
-        `Timelogs ${projectPath}: filtered out ${filteredOutTimelogs} entry(s) outside the linked issue set`
-      );
-    }
     if (skippedNonIssueTimelogs > 0) {
       logger?.info(
         `Timelogs ${projectPath}: skipped ${skippedNonIssueTimelogs} non-issue timelog entr${skippedNonIssueTimelogs === 1 ? 'y' : 'ies'}`
       );
     }
 
-    return issuesByRef;
+    return {
+      issues: issuesByRef,
+      skippedNonIssueTimelogs,
+    };
   }
 
-  async fetchIssueByPathAndIid(projectPath: string, iid: string): Promise<RawIssue | null> {
+  async fetchIssueByPathAndIid(
+    projectPath: string,
+    iid: string,
+    logger?: BuildLogger
+  ): Promise<RawIssue | null> {
     const query = `
-      query IssueByIid($fullPath: ID!, $iid: String!) {
+      query IssueByIid($fullPath: ID!, $iid: String!, $after: String) {
         project(fullPath: $fullPath) {
           id
           name
@@ -416,7 +521,8 @@ export class GitLabClient {
             title
             webUrl
             totalTimeSpent
-            timelogs(first: 200) {
+            timelogs(first: ${TIMELOG_PAGE_SIZE}, after: $after) {
+              pageInfo { hasNextPage endCursor }
               nodes {
                 id
                 timeSpent
@@ -439,23 +545,55 @@ export class GitLabClient {
           title: string;
           webUrl: string;
           totalTimeSpent: number;
-          timelogs: { nodes: TimelogNode[] };
+          timelogs: {
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+            nodes: TimelogNode[];
+          };
         } | null;
       } | null;
     };
-    const data = await this.graphql<Resp>(query, { fullPath: projectPath, iid });
-    if (!data.project?.issue) return null;
-    const issue = data.project.issue;
+
+    let cursor: string | null = null;
+    let page = 0;
+    let issueMeta: Resp['project'] | null = null;
+    let issue: NonNullable<NonNullable<Resp['project']>['issue']> | null = null;
+    const timelogs: TimeEntry[] = [];
+
+    while (true) {
+      page += 1;
+      if (page > 1) {
+        logger?.info(`GraphQL: fetching timelog page ${page} for ${projectPath}#${iid}`);
+      }
+
+      const data: Resp = await this.graphql<Resp>(query, {
+        fullPath: projectPath,
+        iid,
+        after: cursor,
+      });
+      const project = data.project;
+      if (!project?.issue) return null;
+
+      const currentIssue = project.issue;
+      issueMeta = project;
+      issue = currentIssue;
+      timelogs.push(...currentIssue.timelogs.nodes.map((t) => this.toTimeEntry(currentIssue.id, t)));
+
+      if (!currentIssue.timelogs.pageInfo.hasNextPage) break;
+      cursor = currentIssue.timelogs.pageInfo.endCursor;
+    }
+
+    if (!issueMeta || !issue) return null;
+
     return {
       id: issue.id,
       iid: issue.iid,
       title: issue.title,
       webUrl: issue.webUrl,
-      projectId: data.project.id,
-      projectName: data.project.name,
-      projectPath: data.project.fullPath,
+      projectId: issueMeta.id,
+      projectName: issueMeta.name,
+      projectPath: issueMeta.fullPath,
       totalTimeSpentSeconds: issue.totalTimeSpent || 0,
-      timelogs: issue.timelogs.nodes.map((t) => this.toTimeEntry(issue.id, t)),
+      timelogs,
       linkedIssueIds: [],
     };
   }
@@ -479,12 +617,13 @@ export async function loadReportData(
   startDate: string,
   endDate: string,
   logger?: BuildLogger
-): Promise<RawIssue[]> {
+): Promise<LoadReportDataResult> {
   logger?.phase(`Starting data collection from project ${projectPath}`, {
     strategy: 'activity-first',
     startDate,
     endDate,
   });
+  const warnings: string[] = [];
 
   const pmIssueStubs = await client.fetchProjectIssueStubs(projectPath, logger);
   logger?.success(`Loaded ${pmIssueStubs.length} PM issue stub(s) from the catalog`);
@@ -520,56 +659,60 @@ export async function loadReportData(
     return links;
   });
 
+  const pmComponents = buildPmComponents(pmIssueStubs, linksByPmIssueId);
+  logger?.success(
+    `Resolved ${pmComponents.length} PM cluster(s) from ${pmIssueStubs.length} PM issue(s)`
+  );
+
   const linkedRefsByProject = new Map<string, Set<string>>();
   for (const [key, ref] of uniqueLinkedRefs) {
-    if (!linkedRefsByProject.has(ref.projectPath)) linkedRefsByProject.set(ref.projectPath, new Set());
+    if (!linkedRefsByProject.has(ref.projectPath)) {
+      linkedRefsByProject.set(ref.projectPath, new Set());
+    }
     linkedRefsByProject.get(ref.projectPath)!.add(key);
   }
 
+  const projectPathsForActivity = Array.from(
+    new Set([projectPath, ...Array.from(linkedRefsByProject.keys())])
+  );
+
   logger?.success(
-    `Link graph ready: ${totalLinksFound} link(s), ${uniqueLinkedRefs.size} unique linked issue(s), ${linkedRefsByProject.size} linked project(s)`
+    `Link graph ready: ${totalLinksFound} link(s), ${uniqueLinkedRefs.size} unique linked issue(s), ${projectPathsForActivity.length} project(s) in scope`
   );
 
   logger?.phase('Collecting period activity by project', {
-    projects: 1 + linkedRefsByProject.size,
+    projects: projectPathsForActivity.length,
     concurrency: PERIOD_ACTIVITY_FETCH_CONCURRENCY,
   });
 
-  const projectPathsForActivity = [projectPath, ...Array.from(linkedRefsByProject.keys())];
   const periodIssuesByRef = new Map<string, RawIssue>();
   let completedActivityProjects = 0;
+  let skippedNonIssueTimelogs = 0;
 
   await mapWithConcurrency(
     projectPathsForActivity,
     PERIOD_ACTIVITY_FETCH_CONCURRENCY,
     async (activityProjectPath) => {
-      const allowedRefs =
-        activityProjectPath === projectPath ? undefined : linkedRefsByProject.get(activityProjectPath);
+      logger?.info(`GraphQL: collecting period timelogs for ${activityProjectPath}`);
 
-      logger?.info(
-        `GraphQL: collecting period timelogs for ${activityProjectPath}${
-          allowedRefs ? ` (${allowedRefs.size} linked candidate(s))` : ''
-        }`
-      );
-
-      const issues = await client.fetchProjectPeriodIssues(
+      const result = await client.fetchProjectPeriodIssues(
         activityProjectPath,
         startDate,
         endDate,
-        allowedRefs,
         logger
       );
 
-      for (const [key, issue] of issues) {
+      for (const [key, issue] of result.issues) {
         periodIssuesByRef.set(key, issue);
       }
+      skippedNonIssueTimelogs += result.skippedNonIssueTimelogs;
 
       completedActivityProjects += 1;
       logger?.success(
-        `Activity ${completedActivityProjects}/${projectPathsForActivity.length}: ${activityProjectPath} -> ${issues.size} active issue(s)`
+        `Activity ${completedActivityProjects}/${projectPathsForActivity.length}: ${activityProjectPath} -> ${result.issues.size} active issue(s)`
       );
 
-      return issues;
+      return result;
     }
   );
 
@@ -581,33 +724,45 @@ export async function loadReportData(
   if (activeIssueRefKeys.size === 0) {
     logger?.phase('No period activity found in PM project or linked issue set');
     logger?.phase('Data collection complete');
-    return [];
+    return { issues: [], warnings };
   }
 
-  logger?.phase('Selecting active PM roots and expanding context');
+  logger?.phase('Selecting active PM clusters and expanding context');
 
-  const activeRootRefs = new Map<string, IssueStub>();
+  const activeComponents: PmComponent[] = [];
   const neededRefs = new Map<string, LinkedIssueRef>();
 
-  for (const pm of pmIssueStubs) {
-    const rootKey = issueRefKey(pm.projectPath, pm.iid);
-    const linkedRefs = linksByPmIssueId.get(pm.id) || [];
-    const hasOwnActivity = activeIssueRefKeys.has(rootKey);
-    const hasLinkedActivity = linkedRefs.some((ref) =>
+  for (const issue of periodIssuesByRef.values()) {
+    neededRefs.set(issueRefKey(issue.projectPath, issue.iid), {
+      projectPath: issue.projectPath,
+      iid: issue.iid,
+    });
+  }
+
+  for (const component of pmComponents) {
+    const hasPmActivity = component.pmIssues.some((pm) =>
+      activeIssueRefKeys.has(issueRefKey(pm.projectPath, pm.iid))
+    );
+    const hasLinkedActivity = component.linkedRefs.some((ref) =>
       activeIssueRefKeys.has(issueRefKey(ref.projectPath, ref.iid))
     );
 
-    if (!hasOwnActivity && !hasLinkedActivity) continue;
+    if (!hasPmActivity && !hasLinkedActivity) continue;
 
-    activeRootRefs.set(rootKey, pm);
-    neededRefs.set(rootKey, { projectPath: pm.projectPath, iid: pm.iid });
-    for (const link of linkedRefs) {
+    activeComponents.push(component);
+    for (const pm of component.pmIssues) {
+      neededRefs.set(issueRefKey(pm.projectPath, pm.iid), {
+        projectPath: pm.projectPath,
+        iid: pm.iid,
+      });
+    }
+    for (const link of component.linkedRefs) {
       neededRefs.set(issueRefKey(link.projectPath, link.iid), link);
     }
   }
 
   logger?.success(
-    `Expanded active context to ${activeRootRefs.size} PM root(s) and ${neededRefs.size} issue(s)`
+    `Expanded active context to ${activeComponents.length} PM cluster(s) and ${neededRefs.size} issue(s)`
   );
 
   logger?.phase('Loading full issue details for active context', {
@@ -618,13 +773,15 @@ export async function loadReportData(
   const fullIssuesByRef = new Map<string, RawIssue>();
   let completedDetailFetches = 0;
   let inaccessibleDetailIssues = 0;
+  let periodFallbackIssues = 0;
+  let catalogFallbackIssues = 0;
 
   await mapWithConcurrency(
     Array.from(neededRefs.values()),
     FULL_ISSUE_FETCH_CONCURRENCY,
     async (ref) => {
       logger?.info(`GraphQL: loading full issue ${ref.projectPath}#${ref.iid}`);
-      const issue = await client.fetchIssueByPathAndIid(ref.projectPath, ref.iid);
+      const issue = await client.fetchIssueByPathAndIid(ref.projectPath, ref.iid, logger);
       completedDetailFetches += 1;
 
       if (!issue) {
@@ -635,7 +792,9 @@ export async function loadReportData(
         return null;
       }
 
-      fullIssuesByRef.set(issueRefKey(ref.projectPath, ref.iid), issue);
+      const key = issueRefKey(ref.projectPath, ref.iid);
+      const periodIssue = periodIssuesByRef.get(key);
+      fullIssuesByRef.set(key, periodIssue ? mergeIssueData(issue, periodIssue) : issue);
       logger?.success(
         `Details ${completedDetailFetches}/${neededRefs.size}: "${issue.title}" with ${issue.timelogs.length} all-time timelog(s)`
       );
@@ -652,6 +811,7 @@ export async function loadReportData(
         ...periodIssue,
         linkedIssueIds: [],
       });
+      periodFallbackIssues += 1;
       logger?.warn(`Falling back to period-only data for ${ref.projectPath}#${ref.iid}`);
       continue;
     }
@@ -659,31 +819,64 @@ export async function loadReportData(
     const pmStub = pmIssueStubsByRef.get(key);
     if (pmStub) {
       fullIssuesByRef.set(key, stubToRawIssue(pmStub));
+      catalogFallbackIssues += 1;
       logger?.warn(`Falling back to catalog-only data for ${ref.projectPath}#${ref.iid}`);
     }
   }
 
   const finalIssuesById = new Map<string, RawIssue>();
-  for (const [rootKey, pm] of activeRootRefs) {
-    const root =
-      fullIssuesByRef.get(rootKey) ||
-      periodIssuesByRef.get(rootKey) ||
-      stubToRawIssue(pm);
+  for (const component of activeComponents) {
+    for (const pm of component.pmIssues) {
+      const rootKey = issueRefKey(pm.projectPath, pm.iid);
+      const root =
+        fullIssuesByRef.get(rootKey) ||
+        periodIssuesByRef.get(rootKey) ||
+        stubToRawIssue(pm);
 
-    root.linkedIssueIds = [];
-    for (const link of linksByPmIssueId.get(pm.id) || []) {
-      const child = fullIssuesByRef.get(issueRefKey(link.projectPath, link.iid));
-      if (!child) continue;
-      root.linkedIssueIds.push(child.id);
-      finalIssuesById.set(child.id, child);
+      root.linkedIssueIds = [];
+      for (const link of linksByPmIssueId.get(pm.id) || []) {
+        const child = fullIssuesByRef.get(issueRefKey(link.projectPath, link.iid));
+        if (!child) continue;
+        root.linkedIssueIds.push(child.id);
+        finalIssuesById.set(child.id, child);
+      }
+
+      finalIssuesById.set(root.id, root);
     }
+  }
 
-    finalIssuesById.set(root.id, root);
+  for (const [key, periodIssue] of periodIssuesByRef) {
+    const issue = fullIssuesByRef.get(key) || periodIssue;
+    finalIssuesById.set(issue.id, issue);
   }
 
   logger?.success(
     `Data collection complete: ${finalIssuesById.size} issue(s) ready for aggregation, ${inaccessibleDetailIssues} inaccessible during detail load`
   );
 
-  return Array.from(finalIssuesById.values());
+  if (periodFallbackIssues > 0) {
+    warnings.push(
+      `${periodFallbackIssues} issue(s) used period-only timelog data because full issue details were unavailable. Period hours are preserved, but some all-time breakdowns may be incomplete.`
+    );
+  }
+  if (catalogFallbackIssues > 0) {
+    warnings.push(
+      `${catalogFallbackIssues} PM issue(s) were loaded from the catalog only to preserve tree structure.`
+    );
+  }
+  if (inaccessibleDetailIssues > 0) {
+    warnings.push(
+      `${inaccessibleDetailIssues} issue(s) could not be opened in detail with the current token. Full verification depends on access to every linked issue.`
+    );
+  }
+  if (skippedNonIssueTimelogs > 0) {
+    warnings.push(
+      `${skippedNonIssueTimelogs} timelog entr${skippedNonIssueTimelogs === 1 ? 'y was' : 'ies were'} attached to non-issue items and skipped by the current report model. To guarantee full completeness, extend collection to GitLab Work Items and merge-request timelogs too.`
+    );
+  }
+
+  return {
+    issues: Array.from(finalIssuesById.values()),
+    warnings,
+  };
 }

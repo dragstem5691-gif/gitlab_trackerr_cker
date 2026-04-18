@@ -1,11 +1,11 @@
 # GitLab Time Tracking Report
 
-A fast, beautiful web app for generating clean time reports from GitLab projects with support for PM-rooted task hierarchies and cross-project linked items.
+A fast, beautiful web app for generating clean time reports from GitLab projects with support for PM-linked task clusters and cross-project linked items.
 
 ## Features
 
 - **Time tracking aggregation**: Fetch all time entries from a GitLab project and its linked work items
-- **PM-tree hierarchies**: Automatically organize items around root PM issues with linked children from subprojects
+- **PM clusters**: Automatically merge linked PM issues into one root cluster with attached branch work items
 - **Per-user breakdowns**: See hours tracked per person, per issue, with period vs. all-time comparison
 - **People ranking**: Flat ranking of contributors by hours in selected period with issue breakdowns
 - **Tree roll-ups**: Automatic summation of each tree (root + all linked children) for quick overview
@@ -47,7 +47,7 @@ Output goes to `dist/` directory.
 5. **Click "Build report"** to fetch and aggregate data
 
 The **Trees** view shows:
-- Grand total banner (all trees + standalone items)
+- Grand total banner (all PM clusters + standalone items)
 - Per-tree roll-up banners (root + linked children)
 - Full issue details with per-user breakdown
 

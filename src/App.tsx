@@ -21,6 +21,7 @@ function loadInitialValues(): FilterFormValues {
     startDate: '2026-04-01',
     endDate: '2026-04-05',
   };
+
   try {
     const raw = sessionStorage.getItem(SESSION_KEY_FORM);
     const token = sessionStorage.getItem(SESSION_KEY_TOKEN) || '';
@@ -31,6 +32,7 @@ function loadInitialValues(): FilterFormValues {
   } catch {
     /* ignore */
   }
+
   return defaultValues;
 }
 
@@ -97,11 +99,12 @@ function App() {
     setLoading(true);
     setReport(null);
     const logger = createLogger();
+
     try {
       logger.phase('Build report requested');
       logger.info(`Instance URL input: ${values.instanceUrl}`);
       logger.info(`Project path input: ${values.projectPath}`);
-      logger.info(`Period: ${values.startDate} — ${values.endDate}`);
+      logger.info(`Period: ${values.startDate} - ${values.endDate}`);
 
       const origin = parseInstanceOrigin(values.instanceUrl);
       const projectPath = parseProjectPath(values.projectPath);
@@ -112,21 +115,28 @@ function App() {
       logger.success(`Resolved project path: ${projectPath}`);
 
       const client = new GitLabClient(origin, values.token);
-      const issues = await loadReportData(
+      const data = await loadReportData(
         client,
         projectPath,
         values.startDate,
         values.endDate,
         logger
       );
-      logger.success(`Fetched ${issues.length} total issues (PM + linked)`);
+      logger.success(`Fetched ${data.issues.length} total issues from PM clusters and branches`);
 
-      const result = buildReport(issues, projectPath, values.startDate, values.endDate, logger);
+      const result = buildReport(
+        data.issues,
+        projectPath,
+        values.startDate,
+        values.endDate,
+        data.warnings,
+        logger
+      );
       logger.success('Report ready');
       flushLogBuffer();
       setReport(result);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : 'Failed to build report';
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to build report';
       logger.error(`Build failed: ${message}`);
       flushLogBuffer();
       setError(message);
@@ -146,18 +156,22 @@ function App() {
     setFormSnapshot(demoValues);
     setError(null);
     setReport(null);
+
     const logger = createLogger();
     logger.phase('Demo report requested');
     logger.info('Using bundled demo dataset (no GitLab requests)');
     logger.info(`Demo project: ${DEMO_PROJECT_PATH}`);
     logger.success(`Loaded ${DEMO_ISSUES.length} demo issues`);
+
     const result = buildReport(
       DEMO_ISSUES,
       DEMO_PROJECT_PATH,
       demoValues.startDate,
       demoValues.endDate,
+      [],
       logger
     );
+
     logger.success('Demo report ready');
     flushLogBuffer();
     setReport(result);
@@ -187,10 +201,11 @@ function App() {
                 GitLab Time Tracking Report
               </h1>
               <p className="text-xs text-slate-500">
-                Per-user hours with PM-rooted task hierarchy
+                Per-user hours with PM-linked task clusters
               </p>
             </div>
           </div>
+
           <div className="hidden sm:flex items-center gap-3 text-xs text-slate-500">
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800">
               <ShieldCheck className="w-3.5 h-3.5" />
@@ -212,7 +227,7 @@ function App() {
             </h2>
             <p className="mt-3 text-slate-600">
               Pick a PM project and a date range to see tracked hours per person, per issue, and
-              across linked subprojects — with total time and period time side by side.
+              across linked subprojects, with total time and period time side by side.
             </p>
           </div>
         )}
@@ -233,7 +248,7 @@ function App() {
       </main>
 
       <footer className="max-w-6xl mx-auto px-4 sm:px-6 py-8 text-center text-xs text-slate-400">
-        Your GitLab token is kept only in this browser tab's sessionStorage and never sent
+        Your GitLab token is kept only in this browser tab&apos;s sessionStorage and never sent
         anywhere except to your GitLab instance.
       </footer>
     </div>

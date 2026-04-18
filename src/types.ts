@@ -46,8 +46,15 @@ export interface IssueNode {
   isShared: boolean;
 }
 
+export interface PmTree {
+  treeId: string;
+  rootIssueIds: string[];
+  pmIssues: IssueNode[];
+}
+
 export interface TreeRollup {
-  rootIssueId: string;
+  treeId: string;
+  rootIssueIds: string[];
   secondsInPeriod: number;
   secondsAllTime: number;
   issuesCount: number;
@@ -73,7 +80,7 @@ export interface PersonAggregation {
 }
 
 export interface ReportResult {
-  pmTrees: IssueNode[];
+  pmTrees: PmTree[];
   standalone: IssueNode[];
   treeRollups: Record<string, TreeRollup>;
   grandTotal: {
