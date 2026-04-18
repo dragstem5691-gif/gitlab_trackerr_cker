@@ -8,6 +8,7 @@ import { buildReport } from './lib/aggregation';
 import { BuildLogger, type LogEntry } from './lib/logger';
 import { DEMO_ISSUES, DEMO_PROJECT_PATH } from './lib/demoData';
 import { parseInstanceOrigin, parseProjectPath } from './lib/time';
+import { ensureAnonymousSession, loadPreset, savePreset } from './lib/supabase';
 import type { FilterFormValues, ReportResult } from './types';
 
 const SESSION_KEY_FORM = 'gtr.form';
@@ -43,14 +44,56 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [formSnapshot, setFormSnapshot] = useState<FilterFormValues>(initial);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
   const pendingLogEntriesRef = useRef<LogEntry[]>([]);
   const flushTimerRef = useRef<number | null>(null);
+  const hydratedFromRemoteRef = useRef(false);
 
   useEffect(() => {
     const { token, ...rest } = formSnapshot;
     sessionStorage.setItem(SESSION_KEY_FORM, JSON.stringify(rest));
     if (token) sessionStorage.setItem(SESSION_KEY_TOKEN, token);
   }, [formSnapshot]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const id = await ensureAnonymousSession();
+      if (cancelled || !id) return;
+      setUserId(id);
+      const preset = await loadPreset(id);
+      if (cancelled || !preset) {
+        hydratedFromRemoteRef.current = true;
+        return;
+      }
+      setFormSnapshot((current) => ({
+        ...current,
+        instanceUrl: preset.instance_url || current.instanceUrl,
+        projectPath: preset.project_path || current.projectPath,
+        startDate: preset.start_date || current.startDate,
+        endDate: preset.end_date || current.endDate,
+      }));
+      hydratedFromRemoteRef.current = true;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!userId || !hydratedFromRemoteRef.current) return;
+    const handle = window.setTimeout(() => {
+      savePreset(userId, {
+        instance_url: formSnapshot.instanceUrl,
+        project_path: formSnapshot.projectPath,
+        start_date: formSnapshot.startDate || null,
+        end_date: formSnapshot.endDate || null,
+      }).catch(() => {
+        /* ignore network errors */
+      });
+    }, 400);
+    return () => window.clearTimeout(handle);
+  }, [userId, formSnapshot.instanceUrl, formSnapshot.projectPath, formSnapshot.startDate, formSnapshot.endDate]);
 
   useEffect(() => {
     return () => {
