@@ -1,0 +1,72 @@
+GitLab Time Tracking Report - Export Checklist
+===============================================
+
+PROJECT STATUS: READY FOR EXPORT
+
+Build Information:
+  - Build tool: Vite 5.4
+  - React version: 18.3
+  - TypeScript: 5.5 (strict mode)
+  - Node requirement: 16+
+  - Build size: ~224KB (dist folder)
+  - Gzip size: ~60KB (JS), 4.7KB (CSS)
+
+Included Files:
+  ✓ Source code (src/)
+  ✓ Build output (dist/) - production-ready
+  ✓ Configuration files (vite, tsconfig, tailwind, postcss, eslint)
+  ✓ README.md - user documentation
+  ✓ DEPLOYMENT.md - hosting guide
+  ✓ package.json - dependencies locked
+  ✓ package-lock.json - npm lock file
+
+Features Implemented:
+  ✓ Real-time build logging (BuildLog component)
+  ✓ People ranking by selected period (PeopleView component)
+  ✓ Tree roll-up totals (per root + linked children)
+  ✓ Grand total banner (all trees + standalone)
+  ✓ Cleared logs on every new build
+  ✓ Itself-included hour calculation (period hours in rankings)
+
+Key Components:
+  src/lib/logger.ts - BuildLogger class with 5 log levels
+  src/lib/aggregation.ts - Report building with logging
+  src/lib/gitlab.ts - GraphQL/REST client with logging
+  src/components/BuildLog.tsx - Log viewer (collapsible, copyable)
+  src/components/PeopleView.tsx - People ranking with breakdowns
+  src/components/ReportView.tsx - Main view with Trees/People tabs
+
+How to Use on PC:
+  1. Extract project folder
+  2. Run: npm install
+  3. Run: npm run dev (for development)
+  4. Or: npm run build && npm run preview (for production)
+  5. Open browser to http://localhost:5173
+
+Export Steps:
+  1. Download the entire project folder
+  2. Copy to your PC
+  3. Open terminal in project folder
+  4. Run: npm install (first time only)
+  5. Run: npm run dev
+  6. Open http://localhost:5173 in browser
+
+No Configuration Needed:
+  - No .env file required
+  - No database setup
+  - No backend server
+  - No API keys configured
+  - All computation client-side
+
+Testing Before Export:
+  ✓ Build succeeds: npm run build
+  ✓ TypeScript check passes: npm run typecheck
+  ✓ ESLint passes: npm run lint
+  ✓ Dev server works: npm run dev
+  ✓ Demo mode functional with sample data
+
+Notes:
+  - GitLab token stored only in browser sessionStorage
+  - No persistent storage or external dependencies
+  - Production build ready in dist/ folder
+  - All features working as specified
