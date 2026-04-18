@@ -281,7 +281,7 @@ function GrandTotalBanner({ report }: { report: ReportResult }) {
 
 function TreeBlock({ tree, rollup }: { tree: PmTree; rollup?: TreeRollup }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-slate-50/40 shadow-sm overflow-hidden">
+    <div className="rounded-2xl border border-slate-200 bg-slate-100 shadow-sm overflow-hidden">
       {rollup && <TreeRollupBanner rollup={rollup} tree={tree} />}
       <div className="p-4 space-y-4">
         {tree.pmIssues.map((node) => (
