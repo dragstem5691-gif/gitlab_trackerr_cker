@@ -57,17 +57,20 @@ interface PersonColor {
   text: string;
 }
 
-interface GanttSegment {
-  startIndex: number;
-  endIndex: number;
+interface GanttDayEntry {
+  dateIndex: number;
+  date: string;
+  seconds: number;
 }
 
 interface GanttTrack {
   userId: string;
   userName: string;
   totalSeconds: number;
-  segments: GanttSegment[];
+  days: GanttDayEntry[];
 }
+
+const WORK_DAY_SECONDS = 8 * 60 * 60;
 
 interface GanttRow {
   issueId: string;
@@ -374,21 +377,17 @@ function GanttTaskRow({
             density.rowVerticalPadding +
             trackIndex * (density.trackHeight + density.trackGap);
 
-          return track.segments.map((segment, segmentIndex) => {
-            const left = segment.startIndex * density.dayCellWidth + 2;
-            const width =
-              (segment.endIndex - segment.startIndex + 1) * density.dayCellWidth - 4;
-            const label =
-              width >= 92
-                ? track.userName
-                : width >= 42
-                  ? getInitials(track.userName)
-                  : '';
+          return track.days.map((day) => {
+            const left = day.dateIndex * density.dayCellWidth + 2;
+            const width = density.dayCellWidth - 4;
+            const intensity = Math.min(1, day.seconds / WORK_DAY_SECONDS);
+            const dayHoursLabel = formatHours(day.seconds);
+            const showLabel = width >= 22 && density.trackHeight >= 12;
 
             return (
               <div
-                key={`${track.userId}-${segmentIndex}`}
-                className="absolute flex items-center rounded-sm border px-1 text-[9px] font-semibold leading-none"
+                key={`${track.userId}-${day.date}`}
+                className="absolute flex items-center justify-center rounded-sm border text-[9px] font-semibold leading-none"
                 style={{
                   left,
                   top,
@@ -397,14 +396,13 @@ function GanttTaskRow({
                   backgroundColor: color.fill,
                   borderColor: color.border,
                   color: color.text,
+                  opacity: 0.55 + 0.45 * intensity,
                 }}
-                title={`${track.userName}: ${formatHours(track.totalSeconds)}`}
+                title={`${track.userName}: ${dayHoursLabel} on ${formatLongDate(day.date)} (${Math.round(intensity * 100)}% of 8h workday)`}
               >
-                <span
-                  className="mr-1 h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ backgroundColor: color.strong }}
-                />
-                <span className="truncate">{label}</span>
+                {showLabel && (
+                  <span className="truncate px-0.5 tabular-nums">{dayHoursLabel}</span>
+                )}
               </div>
             );
           });
@@ -483,7 +481,7 @@ function buildGanttModel(
   for (const issue of collectUniqueIssues(report)) {
     const tracksByUserId = new Map<
       string,
-      { userId: string; userName: string; totalSeconds: number; dates: Set<string> }
+      { userId: string; userName: string; totalSeconds: number; secondsByDate: Map<string, number> }
     >();
     let totalSecondsInPeriod = 0;
 
@@ -502,14 +500,17 @@ function buildGanttModel(
           userId: entry.userId,
           userName: entry.userName,
           totalSeconds: 0,
-          dates: new Set<string>(),
+          secondsByDate: new Map<string, number>(),
         };
         tracksByUserId.set(entry.userId, track);
       }
 
       track.userName = entry.userName;
       track.totalSeconds += entry.timeSpentSeconds;
-      track.dates.add(spentDate);
+      track.secondsByDate.set(
+        spentDate,
+        (track.secondsByDate.get(spentDate) ?? 0) + entry.timeSpentSeconds
+      );
       if (!colorsByUserId[entry.userId]) {
         colorsByUserId[entry.userId] = buildPersonColor(Object.keys(colorsByUserId).length);
       }
@@ -522,7 +523,14 @@ function buildGanttModel(
         userId: track.userId,
         userName: track.userName,
         totalSeconds: track.totalSeconds,
-        segments: buildSegments(track.dates, dateIndexByDate),
+        days: Array.from(track.secondsByDate.entries())
+          .map(([date, seconds]) => ({
+            date,
+            seconds,
+            dateIndex: dateIndexByDate.get(date) ?? -1,
+          }))
+          .filter((entry) => entry.dateIndex >= 0)
+          .sort((left, right) => left.dateIndex - right.dateIndex),
       }))
       .sort(
         (left, right) =>
@@ -533,7 +541,7 @@ function buildGanttModel(
       );
 
     const firstActiveIndex = Math.min(
-      ...tracks.flatMap((track) => track.segments.map((segment) => segment.startIndex))
+      ...tracks.flatMap((track) => track.days.map((day) => day.dateIndex))
     );
 
     rows.push({
@@ -616,34 +624,6 @@ function calculateTaskColumnWidth(
   );
 }
 
-function buildSegments(dates: Set<string>, dateIndexByDate: Map<string, number>): GanttSegment[] {
-  const sortedIndices = Array.from(dates)
-    .map((date) => dateIndexByDate.get(date))
-    .filter((value): value is number => typeof value === 'number')
-    .sort((left, right) => left - right);
-
-  if (sortedIndices.length === 0) return [];
-
-  const segments: GanttSegment[] = [];
-  let startIndex = sortedIndices[0];
-  let endIndex = sortedIndices[0];
-
-  for (let index = 1; index < sortedIndices.length; index += 1) {
-    const current = sortedIndices[index];
-    if (current === endIndex + 1) {
-      endIndex = current;
-      continue;
-    }
-
-    segments.push({ startIndex, endIndex });
-    startIndex = current;
-    endIndex = current;
-  }
-
-  segments.push({ startIndex, endIndex });
-  return segments;
-}
-
 function enumerateDates(startDate: string, endDate: string): string[] {
   const dates: string[] = [];
   const dayMs = 24 * 60 * 60 * 1000;
@@ -722,12 +702,3 @@ function isWeekend(date: string) {
   return day === 0 || day === 6;
 }
 
-function getInitials(name: string) {
-  return name
-    .split(' ')
-    .map((part) => part[0])
-    .filter(Boolean)
-    .slice(0, 2)
-    .join('')
-    .toUpperCase();
-}
