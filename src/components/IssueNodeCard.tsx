@@ -120,10 +120,19 @@ export function IssueNodeCard({ node, depth, rootBadge = null }: Props) {
       </div>
 
       {hasChildren && expanded && (
-        <div className="mt-3 ml-6 pl-4 border-l-2 border-slate-200 space-y-3">
-          {node.children.map((child) => (
-            <IssueNodeCard key={child.issue.id} node={child} depth={depth + 1} />
-          ))}
+        <div className="mt-3 ml-6">
+          <div className="flex items-center gap-2 mb-2 pl-4">
+            <div className="h-px flex-1 bg-slate-200" />
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-400 px-1">
+              Subtasks
+            </span>
+            <div className="h-px flex-1 bg-slate-200" />
+          </div>
+          <div className="pl-4 border-l-2 border-slate-200 space-y-3">
+            {node.children.map((child) => (
+              <IssueNodeCard key={child.issue.id} node={child} depth={depth + 1} />
+            ))}
+          </div>
         </div>
       )}
     </div>

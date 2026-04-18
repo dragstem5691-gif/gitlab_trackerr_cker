@@ -281,9 +281,9 @@ function GrandTotalBanner({ report }: { report: ReportResult }) {
 
 function TreeBlock({ tree, rollup }: { tree: PmTree; rollup?: TreeRollup }) {
   return (
-    <div>
+    <div className="rounded-2xl border border-slate-200 bg-slate-50/40 shadow-sm overflow-hidden">
       {rollup && <TreeRollupBanner rollup={rollup} tree={tree} />}
-      <div className="space-y-4">
+      <div className="p-4 space-y-4">
         {tree.pmIssues.map((node) => (
           <IssueNodeCard key={node.issue.id} node={node} depth={0} rootBadge="pm-root" />
         ))}
@@ -300,7 +300,7 @@ function TreeRollupBanner({ rollup, tree }: { rollup: TreeRollup; tree: PmTree }
       : `${tree.pmIssues.length} linked PM roots: ${rootLabels}`;
 
   return (
-    <div className="mb-3 rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-emerald-50 px-4 py-3">
+    <div className="border-b border-sky-200 bg-gradient-to-br from-sky-50 to-emerald-50 px-4 py-3">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0">
           <div className="text-[10px] uppercase tracking-wider text-sky-800/80 font-bold">
