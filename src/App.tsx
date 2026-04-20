@@ -3,10 +3,16 @@ import { Clock4, Github, ShieldCheck } from 'lucide-react';
 import { FilterForm } from './components/FilterForm';
 import { ReportView } from './components/ReportView';
 import { BuildLog } from './components/BuildLog';
+import { PlanningBuilderView } from './components/PlanningBuilderView';
 import { GitLabClient, loadReportData } from './lib/gitlab';
 import { buildReport } from './lib/aggregation';
 import { BuildLogger, type LogEntry } from './lib/logger';
 import { DEMO_ISSUES, DEMO_PROJECT_PATH } from './lib/demoData';
+import {
+  buildPlanningBoards,
+  syncPlanningAssignments,
+  type PlanningAssignments,
+} from './lib/planning';
 import { parseInstanceOrigin, parseProjectPath } from './lib/time';
 import type { FilterFormValues, ReportResult } from './types';
 
@@ -39,10 +45,12 @@ function loadInitialValues(): FilterFormValues {
 function App() {
   const initial = useMemo(loadInitialValues, []);
   const [report, setReport] = useState<ReportResult | null>(null);
+  const [page, setPage] = useState<'report' | 'planning'>('report');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formSnapshot, setFormSnapshot] = useState<FilterFormValues>(initial);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
+  const [planningAssignments, setPlanningAssignments] = useState<PlanningAssignments>({});
   const pendingLogEntriesRef = useRef<LogEntry[]>([]);
   const flushTimerRef = useRef<number | null>(null);
 
@@ -59,6 +67,16 @@ function App() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!report) {
+      setPlanningAssignments({});
+      return;
+    }
+
+    const boards = buildPlanningBoards(report);
+    setPlanningAssignments((previous) => syncPlanningAssignments(boards, previous));
+  }, [report]);
 
   const flushLogBuffer = () => {
     if (flushTimerRef.current !== null) {
@@ -97,6 +115,7 @@ function App() {
     setFormSnapshot(values);
     setError(null);
     setLoading(true);
+    setPage('report');
     setReport(null);
     const logger = createLogger();
 
@@ -155,6 +174,7 @@ function App() {
     };
     setFormSnapshot(demoValues);
     setError(null);
+    setPage('report');
     setReport(null);
 
     const logger = createLogger();
@@ -184,8 +204,10 @@ function App() {
       flushTimerRef.current = null;
     }
     setReport(null);
+    setPage('report');
     setError(null);
     setLogEntries([]);
+    setPlanningAssignments({});
   };
 
   return (
@@ -244,7 +266,22 @@ function App() {
           <BuildLog entries={logEntries} isRunning={loading} defaultOpen={loading || !report} />
         )}
 
-        {report && <ReportView report={report} onReset={handleReset} />}
+        {report && page === 'report' && (
+          <ReportView
+            report={report}
+            onReset={handleReset}
+            onBuildPlanning={() => setPage('planning')}
+          />
+        )}
+
+        {report && page === 'planning' && (
+          <PlanningBuilderView
+            report={report}
+            assignments={planningAssignments}
+            onAssignmentsChange={setPlanningAssignments}
+            onBack={() => setPage('report')}
+          />
+        )}
       </main>
 
       <footer className="max-w-6xl mx-auto px-4 sm:px-6 py-8 text-center text-xs text-slate-400">

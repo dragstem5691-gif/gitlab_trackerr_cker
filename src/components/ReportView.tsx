@@ -4,6 +4,7 @@ import {
   BarChart3,
   CalendarDays,
   CalendarRange,
+  FolderKanban,
   FolderGit2,
   Inbox,
   Layers,
@@ -13,6 +14,7 @@ import {
   Users,
 } from 'lucide-react';
 import type { PmTree, ReportResult, TreeRollup } from '../types';
+import { buildPlanningBoards } from '../lib/planning';
 import { formatHours } from '../lib/time';
 import { GanttView } from './GanttView';
 import { IssueNodeCard } from './IssueNodeCard';
@@ -21,13 +23,15 @@ import { PeopleView } from './PeopleView';
 interface Props {
   report: ReportResult;
   onReset: () => void;
+  onBuildPlanning: () => void;
 }
 
 type ViewMode = 'trees' | 'people' | 'gantt';
 
-export function ReportView({ report, onReset }: Props) {
+export function ReportView({ report, onReset, onBuildPlanning }: Props) {
   const [mode, setMode] = useState<ViewMode>('trees');
   const isEmpty = report.pmTrees.length === 0 && report.standalone.length === 0;
+  const boards = buildPlanningBoards(report);
 
   return (
     <div className="space-y-6">
@@ -54,6 +58,13 @@ export function ReportView({ report, onReset }: Props) {
 
           <div className="flex items-center gap-2">
             <ViewSwitch mode={mode} onChange={setMode} />
+            <button
+              onClick={onBuildPlanning}
+              disabled={isEmpty}
+              className="px-4 py-2 rounded-lg bg-slate-900 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition"
+            >
+              Build planning
+            </button>
             <button
               onClick={onReset}
               className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 transition"
@@ -101,6 +112,49 @@ export function ReportView({ report, onReset }: Props) {
             </div>
           </div>
         </div>
+      )}
+
+      {!isEmpty && boards.length > 0 && (
+        <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-200">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+              <FolderKanban className="w-4 h-4 text-sky-700" />
+              Hours by boards
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Planning boards are built from PM clusters and standalone roots. Totals here include
+              all hours from every board in the report.
+            </p>
+          </div>
+
+          <div className="divide-y divide-slate-100">
+            {boards.map((board) => (
+              <div
+                key={board.boardId}
+                className="px-5 py-3 flex items-start justify-between gap-3"
+              >
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-slate-900 truncate">
+                    {board.projectPath}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {board.projectName}
+                    <span className="mx-1.5 text-slate-300">|</span>
+                    {board.issuesCount} unique issue(s)
+                  </div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="text-sm font-bold text-slate-900 tabular-nums">
+                    {formatHours(board.secondsInPeriod)}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {board.contributors.length} contributor(s)
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       {isEmpty && (
