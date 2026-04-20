@@ -4,6 +4,7 @@ import {
   BarChart3,
   CalendarDays,
   CalendarRange,
+  ChevronDown,
   FolderKanban,
   FolderGit2,
   Inbox,
@@ -122,36 +123,72 @@ export function ReportView({ report, onReset, onBuildPlanning }: Props) {
               Hours by boards
             </div>
             <p className="mt-1 text-xs text-slate-500">
-              Planning boards are built from PM clusters and standalone roots. Totals here include
-              all hours from every board in the report.
+              Each board below is a separate GitLab project. Expand a project to see who logged
+              hours on that specific board during the selected period.
             </p>
           </div>
 
           <div className="divide-y divide-slate-100">
             {boards.map((board) => (
-              <div
-                key={board.boardId}
-                className="px-5 py-3 flex items-start justify-between gap-3"
-              >
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-slate-900 truncate">
-                    {board.projectPath}
+              <details key={board.boardId} className="group">
+                <summary className="list-none cursor-pointer px-5 py-3 flex items-start justify-between gap-3 hover:bg-slate-50 transition">
+                  <div className="flex items-start gap-3 min-w-0">
+                    <div className="mt-0.5 h-8 w-8 rounded-lg bg-slate-100 text-slate-500 flex items-center justify-center shrink-0">
+                      <ChevronDown className="w-4 h-4 transition-transform group-open:rotate-180" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-slate-900 truncate">
+                        {board.projectPath}
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        {board.projectName}
+                        <span className="mx-1.5 text-slate-300">|</span>
+                        {board.issuesCount} unique issue(s)
+                      </div>
+                    </div>
                   </div>
-                  <div className="text-[11px] text-slate-500">
-                    {board.projectName}
-                    <span className="mx-1.5 text-slate-300">|</span>
-                    {board.issuesCount} unique issue(s)
+                  <div className="text-right shrink-0">
+                    <div className="text-sm font-bold text-slate-900 tabular-nums">
+                      {formatHours(board.secondsInPeriod)}
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      {board.contributors.length} contributor(s)
+                    </div>
+                  </div>
+                </summary>
+
+                <div className="px-5 pb-4">
+                  <div className="ml-11 rounded-xl border border-slate-200 bg-slate-50 overflow-hidden">
+                    {board.contributors.map((contributor) => (
+                      <div
+                        key={`${board.boardId}:${contributor.userId}`}
+                        className="px-4 py-3 flex items-center justify-between gap-3 border-t border-slate-200 first:border-t-0"
+                      >
+                        <div className="min-w-0 flex items-center gap-3">
+                          <div className="h-9 w-9 rounded-full bg-sky-100 text-sky-800 flex items-center justify-center text-xs font-bold shrink-0">
+                            {getInitials(contributor.userName)}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-slate-900 truncate">
+                              {contributor.userName}
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              {contributor.issuesTouchedInPeriod} issue(s) with tracked time on this
+                              board
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-sm font-bold text-slate-900 tabular-nums">
+                            {formatHours(contributor.secondsInPeriod)}
+                          </div>
+                          <div className="text-[11px] text-slate-500">in selected period</div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-                <div className="text-right shrink-0">
-                  <div className="text-sm font-bold text-slate-900 tabular-nums">
-                    {formatHours(board.secondsInPeriod)}
-                  </div>
-                  <div className="text-[11px] text-slate-500">
-                    {board.contributors.length} contributor(s)
-                  </div>
-                </div>
-              </div>
+              </details>
             ))}
           </div>
         </section>
@@ -469,4 +506,15 @@ function SectionHeader({
       <p className="text-xs text-slate-500 mt-0.5">{description}</p>
     </div>
   );
+}
+
+function getInitials(name: string) {
+  const parts = name
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+
+  if (parts.length === 0) return '?';
+  return parts.map((part) => part[0]?.toUpperCase() ?? '').join('');
 }
