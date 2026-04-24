@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
-import { CalendarRange, ExternalLink, Inbox, Users } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { toPng } from 'html-to-image';
+import { CalendarRange, Download, ExternalLink, Inbox, Users } from 'lucide-react';
 import type { RawIssue, ReportResult } from '../types';
 import { extractSpentAtDate, formatHours, isInPeriod } from '../lib/time';
 
@@ -105,6 +106,9 @@ export function GanttView({ report }: { report: ReportResult }) {
   );
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const exportRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (selectedUserId && !activePeople.some((person) => person.userId === selectedUserId)) {
@@ -122,9 +126,47 @@ export function GanttView({ report }: { report: ReportResult }) {
     () => buildGanttModel(report, selectedUserId, selectedDate),
     [report, selectedUserId, selectedDate]
   );
+  const visibleLegendPeople = useMemo(() => {
+    const visibleIds = new Set<string>();
+
+    for (const row of model.rows) {
+      for (const track of row.tracks) {
+        visibleIds.add(track.userId);
+      }
+    }
+
+    return report.people.filter((person) => visibleIds.has(person.userId));
+  }, [model.rows, report.people]);
   const isScrollable = model.dates.length > MAX_VISIBLE_DAYS;
   const isFocused = Boolean(selectedUserId);
   const isDateFiltered = Boolean(selectedDate);
+
+  async function handleExportPng() {
+    if (!exportRef.current || isExporting) {
+      return;
+    }
+
+    setIsExporting(true);
+    setExportError(null);
+
+    try {
+      const dataUrl = await toPng(exportRef.current, {
+        cacheBust: true,
+        backgroundColor: '#ffffff',
+        pixelRatio: 2,
+      });
+
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = buildExportFileName(report.projectPath, selectedUserId, selectedDate);
+      link.click();
+    } catch (error) {
+      console.error('Failed to export Gantt PNG', error);
+      setExportError('PNG export failed. Try again after the chart finishes rendering.');
+    } finally {
+      setIsExporting(false);
+    }
+  }
 
   if (model.rows.length === 0) {
     return (
@@ -186,6 +228,23 @@ export function GanttView({ report }: { report: ReportResult }) {
               {isScrollable && <InfoBadge>scroll right for more days</InfoBadge>}
             </div>
           </div>
+
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[11px] text-slate-500">
+              Export saves the chart exactly as currently filtered.
+            </div>
+            <button
+              type="button"
+              onClick={handleExportPng}
+              disabled={isExporting}
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Download className="h-3.5 w-3.5" />
+              {isExporting ? 'Preparing PNG...' : 'Export PNG'}
+            </button>
+          </div>
+
+          {exportError && <p className="mt-2 text-[11px] text-rose-600">{exportError}</p>}
         </div>
 
         <div className="border-b border-slate-200 px-3 py-2">
@@ -217,91 +276,160 @@ export function GanttView({ report }: { report: ReportResult }) {
             className="w-full overflow-x-auto rounded-lg border border-slate-200"
             style={{ maxWidth: model.taskColumnWidth + model.visibleTimelineWidth }}
           >
-            <div style={{ width: model.taskColumnWidth + model.timelineWidth }}>
-              <div className="flex border-b border-slate-200 bg-slate-100/80">
-                <div
-                  className="sticky left-0 z-20 shrink-0 border-r border-slate-200 bg-slate-100/80 px-2 py-1.5"
-                  style={{ width: model.taskColumnWidth }}
-                >
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                    Task
-                  </div>
-                </div>
-
-                <div className="shrink-0" style={{ width: model.timelineWidth }}>
-                  <div
-                    className="grid"
-                    style={{
-                      gridTemplateColumns: `repeat(${model.dates.length}, ${model.density.dayCellWidth}px)`,
-                    }}
-                  >
-                    {model.dates.map((date) => (
-                      <button
-                        key={date}
-                        type="button"
-                        onClick={() =>
-                          setSelectedDate((current) => (current === date ? null : date))
-                        }
-                        title={
-                          selectedDate === date
-                            ? `Show all dates instead of ${formatLongDate(date)}`
-                            : `Show only ${formatLongDate(date)}`
-                        }
-                        className={`border-r border-slate-200 px-0.5 py-1 text-center transition ${
-                          selectedDate === date
-                            ? 'bg-sky-200/80 ring-1 ring-inset ring-sky-400'
-                            : isWeekend(date)
-                              ? 'bg-amber-100/90 hover:bg-amber-200/90'
-                              : 'hover:bg-slate-200/60'
-                        }`}
-                      >
-                        <div
-                          className={`text-[11px] font-semibold leading-none tabular-nums ${
-                            selectedDate === date
-                              ? 'text-sky-950'
-                              : isWeekend(date)
-                                ? 'text-amber-950'
-                                : 'text-slate-900'
-                          }`}
-                        >
-                          {formatDay(date)}
-                        </div>
-                        <div
-                          className={`mt-0.5 text-[9px] uppercase leading-none ${
-                            selectedDate === date
-                              ? 'text-sky-700'
-                              : isWeekend(date)
-                                ? 'text-amber-700'
-                                : 'text-slate-500'
-                          }`}
-                        >
-                          {formatWeekday(date)}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="divide-y divide-slate-200">
-                {model.rows.map((row, rowIndex) => (
-                  <GanttTaskRow
-                    key={row.issueId}
-                    row={row}
-                    rowIndex={rowIndex}
-                    dates={model.dates}
-                    taskColumnWidth={model.taskColumnWidth}
-                    density={model.density}
-                    colorsByUserId={model.colorsByUserId}
-                    focusedUserId={selectedUserId}
-                  />
-                ))}
-              </div>
+            <div
+              className="bg-white"
+              style={{ width: model.taskColumnWidth + model.timelineWidth }}
+            >
+              <GanttLegend
+                people={visibleLegendPeople}
+                colorsByUserId={model.colorsByUserId}
+              />
+              <GanttGrid
+                model={model}
+                selectedDate={selectedDate}
+                focusedUserId={selectedUserId}
+                onSelectDate={(date) =>
+                  setSelectedDate((current) => (current === date ? null : date))
+                }
+                interactive
+              />
             </div>
           </div>
         </div>
       </div>
+
+      <div className="fixed left-[-100000px] top-0 pointer-events-none">
+        <div
+          ref={exportRef}
+          className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+          style={{ width: model.taskColumnWidth + model.timelineWidth + 32 }}
+        >
+          <div className="border-b border-slate-200 pb-3">
+            <div className="flex items-center gap-2 text-base font-semibold text-slate-900">
+              <CalendarRange className="h-4 w-4 text-sky-700" />
+              Gantt export
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              {report.projectPath} | {report.period.start} - {report.period.end}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-slate-600">
+              <InfoBadge>{model.rows.length} task(s)</InfoBadge>
+              <InfoBadge>{model.dates.length} day(s)</InfoBadge>
+              <InfoBadge>
+                {selectedUserId ? model.selectedUserName ?? 'Filtered user' : 'All people'}
+              </InfoBadge>
+              <InfoBadge>{selectedDate ? formatLongDate(selectedDate) : 'All dates'}</InfoBadge>
+            </div>
+          </div>
+
+          <div className="mt-3">
+            <GanttLegend
+              people={visibleLegendPeople}
+              colorsByUserId={model.colorsByUserId}
+            />
+          </div>
+
+          <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-white">
+            <GanttGrid
+              model={model}
+              selectedDate={selectedDate}
+              focusedUserId={selectedUserId}
+              interactive={false}
+            />
+          </div>
+        </div>
+      </div>
     </section>
+  );
+}
+
+function GanttGrid({
+  model,
+  selectedDate,
+  focusedUserId,
+  onSelectDate,
+  interactive,
+}: {
+  model: GanttModel;
+  selectedDate: string | null;
+  focusedUserId: string | null;
+  onSelectDate?: (date: string) => void;
+  interactive: boolean;
+}) {
+  return (
+    <>
+      <div className="flex border-b border-slate-200 bg-slate-100/80">
+        <div
+          className="shrink-0 border-r border-slate-200 bg-slate-100/80 px-2 py-1.5"
+          style={{ width: model.taskColumnWidth }}
+        >
+          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+            Task
+          </div>
+        </div>
+
+        <div className="shrink-0" style={{ width: model.timelineWidth }}>
+          <div
+            className="grid"
+            style={{
+              gridTemplateColumns: `repeat(${model.dates.length}, ${model.density.dayCellWidth}px)`,
+            }}
+          >
+            {model.dates.map((date) =>
+              interactive ? (
+                <button
+                  key={date}
+                  type="button"
+                  onClick={() => onSelectDate?.(date)}
+                  title={
+                    selectedDate === date
+                      ? `Show all dates instead of ${formatLongDate(date)}`
+                      : `Show only ${formatLongDate(date)}`
+                  }
+                  className={`border-r border-slate-200 px-0.5 py-1 text-center transition ${
+                    selectedDate === date
+                      ? 'bg-sky-200/80 ring-1 ring-inset ring-sky-400'
+                      : isWeekend(date)
+                        ? 'bg-amber-100/90 hover:bg-amber-200/90'
+                        : 'hover:bg-slate-200/60'
+                  }`}
+                >
+                  <DateHeaderCell date={date} selected={selectedDate === date} />
+                </button>
+              ) : (
+                <div
+                  key={date}
+                  className={`border-r border-slate-200 px-0.5 py-1 text-center ${
+                    selectedDate === date
+                      ? 'bg-sky-200/80'
+                      : isWeekend(date)
+                        ? 'bg-amber-100/90'
+                        : ''
+                  }`}
+                >
+                  <DateHeaderCell date={date} selected={selectedDate === date} />
+                </div>
+              )
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="divide-y divide-slate-200">
+        {model.rows.map((row, rowIndex) => (
+          <GanttTaskRow
+            key={row.issueId}
+            row={row}
+            rowIndex={rowIndex}
+            dates={model.dates}
+            taskColumnWidth={model.taskColumnWidth}
+            density={model.density}
+            colorsByUserId={model.colorsByUserId}
+            focusedUserId={focusedUserId}
+          />
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -337,7 +465,7 @@ function GanttTaskRow({
   return (
     <div className={`flex ${rowBgClass}`}>
       <div
-        className={`sticky left-0 z-10 shrink-0 border-r border-slate-200 px-2 py-1 ${rowBgClass}`}
+        className={`shrink-0 border-r border-slate-200 px-2 py-1 ${rowBgClass}`}
         style={{ width: taskColumnWidth, minHeight: rowHeight }}
       >
         <div className="flex h-full flex-col justify-center">
@@ -456,6 +584,83 @@ function InfoBadge({ children }: { children: React.ReactNode }) {
     <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1">
       {children}
     </span>
+  );
+}
+
+function GanttLegend({
+  people,
+  colorsByUserId,
+}: {
+  people: ReportResult['people'];
+  colorsByUserId: Record<string, PersonColor>;
+}) {
+  return (
+    <div className="border-b border-slate-200 bg-white px-3 py-2 last:border-b-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+          Legend
+        </span>
+        {people.map((person) => (
+          <LegendBadge
+            key={person.userId}
+            label={person.userName}
+            color={colorsByUserId[person.userId]}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LegendBadge({ label, color }: { label: string; color?: PersonColor }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-medium text-slate-700"
+      style={
+        color
+          ? {
+              backgroundColor: color.fill,
+              borderColor: color.border,
+              color: color.text,
+            }
+          : undefined
+      }
+    >
+      <span
+        className="h-2.5 w-2.5 rounded-full border border-black/10"
+        style={{ backgroundColor: color?.strong ?? '#64748b' }}
+      />
+      {label}
+    </span>
+  );
+}
+
+function DateHeaderCell({ date, selected }: { date: string; selected: boolean }) {
+  return (
+    <>
+      <div
+        className={`text-[11px] font-semibold leading-none tabular-nums ${
+          selected
+            ? 'text-sky-950'
+            : isWeekend(date)
+              ? 'text-amber-950'
+              : 'text-slate-900'
+        }`}
+      >
+        {formatDay(date)}
+      </div>
+      <div
+        className={`mt-0.5 text-[9px] uppercase leading-none ${
+          selected
+            ? 'text-sky-700'
+            : isWeekend(date)
+              ? 'text-amber-700'
+              : 'text-slate-500'
+        }`}
+      >
+        {formatWeekday(date)}
+      </div>
+    </>
   );
 }
 
@@ -700,5 +905,22 @@ function formatLongDate(date: string) {
 function isWeekend(date: string) {
   const day = new Date(`${date}T00:00:00Z`).getUTCDay();
   return day === 0 || day === 6;
+}
+
+function buildExportFileName(
+  projectPath: string,
+  selectedUserId: string | null,
+  selectedDate: string | null
+) {
+  const safeProject = projectPath.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
+  const suffix = [
+    'gantt',
+    selectedUserId ? 'filtered-user' : null,
+    selectedDate ?? null,
+  ]
+    .filter(Boolean)
+    .join('-');
+
+  return `${safeProject || 'report'}-${suffix}.png`;
 }
 
