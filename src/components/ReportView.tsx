@@ -25,11 +25,12 @@ interface Props {
   report: ReportResult;
   onReset: () => void;
   onBuildPlanning: () => void;
+  onOpenGanttBuilder: () => void;
 }
 
 type ViewMode = 'trees' | 'people' | 'gantt';
 
-export function ReportView({ report, onReset, onBuildPlanning }: Props) {
+export function ReportView({ report, onReset, onBuildPlanning, onOpenGanttBuilder }: Props) {
   const [mode, setMode] = useState<ViewMode>('trees');
   const isEmpty = report.pmTrees.length === 0 && report.standalone.length === 0;
   const boards = buildPlanningBoards(report);
@@ -59,6 +60,13 @@ export function ReportView({ report, onReset, onBuildPlanning }: Props) {
 
           <div className="flex items-center gap-2">
             <ViewSwitch mode={mode} onChange={setMode} />
+            <button
+              onClick={onOpenGanttBuilder}
+              disabled={isEmpty}
+              className="px-4 py-2 rounded-lg bg-sky-700 text-sm font-medium text-white hover:bg-sky-800 disabled:opacity-50 disabled:cursor-not-allowed transition"
+            >
+              Gantt Builder
+            </button>
             <button
               onClick={onBuildPlanning}
               disabled={isEmpty}

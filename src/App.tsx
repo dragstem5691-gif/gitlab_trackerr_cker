@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Clock4, Github, ShieldCheck } from 'lucide-react';
+import { CalendarRange, Clock4, Github, ShieldCheck } from 'lucide-react';
 import { FilterForm } from './components/FilterForm';
 import { ReportView } from './components/ReportView';
 import { BuildLog } from './components/BuildLog';
 import { PlanningBuilderView } from './components/PlanningBuilderView';
+import { GanttBuilderView } from './components/GanttBuilderView';
 import { GitLabClient, loadReportData } from './lib/gitlab';
 import { buildReport } from './lib/aggregation';
 import { BuildLogger, type LogEntry } from './lib/logger';
@@ -45,7 +46,7 @@ function loadInitialValues(): FilterFormValues {
 function App() {
   const initial = useMemo(loadInitialValues, []);
   const [report, setReport] = useState<ReportResult | null>(null);
-  const [page, setPage] = useState<'report' | 'planning'>('report');
+  const [page, setPage] = useState<'report' | 'planning' | 'ganttBuilder'>('report');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formSnapshot, setFormSnapshot] = useState<FilterFormValues>(initial);
@@ -242,7 +243,7 @@ function App() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-6">
-        {!report && (
+        {page !== 'ganttBuilder' && !report && (
           <div className="text-center max-w-2xl mx-auto mb-6">
             <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 tracking-tight">
               Build a clean time report in seconds
@@ -251,18 +252,28 @@ function App() {
               Pick a PM project and a date range to see tracked hours per person, per issue, and
               across linked subprojects, with total time and period time side by side.
             </p>
+            <button
+              type="button"
+              onClick={() => setPage('ganttBuilder')}
+              className="mt-5 inline-flex items-center gap-2 rounded-lg bg-sky-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-800"
+            >
+              <CalendarRange className="h-4 w-4" />
+              Open Gantt Builder
+            </button>
           </div>
         )}
 
-        <FilterForm
-          initialValues={formSnapshot}
-          onSubmit={handleSubmit}
-          onDemo={handleDemo}
-          isLoading={loading}
-          error={error}
-        />
+        {page !== 'ganttBuilder' && (
+          <FilterForm
+            initialValues={formSnapshot}
+            onSubmit={handleSubmit}
+            onDemo={handleDemo}
+            isLoading={loading}
+            error={error}
+          />
+        )}
 
-        {(logEntries.length > 0 || loading) && (
+        {page !== 'ganttBuilder' && (logEntries.length > 0 || loading) && (
           <BuildLog entries={logEntries} isRunning={loading} defaultOpen={loading || !report} />
         )}
 
@@ -271,6 +282,7 @@ function App() {
             report={report}
             onReset={handleReset}
             onBuildPlanning={() => setPage('planning')}
+            onOpenGanttBuilder={() => setPage('ganttBuilder')}
           />
         )}
 
@@ -279,6 +291,13 @@ function App() {
             report={report}
             assignments={planningAssignments}
             onAssignmentsChange={setPlanningAssignments}
+            onBack={() => setPage('report')}
+          />
+        )}
+
+        {page === 'ganttBuilder' && (
+          <GanttBuilderView
+            report={report}
             onBack={() => setPage('report')}
           />
         )}
