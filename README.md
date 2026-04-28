@@ -38,6 +38,20 @@ npm run preview
 
 Output goes to `dist/` directory.
 
+### Run with Docker
+
+```bash
+docker compose up -d --build
+```
+
+Open browser to `http://localhost:8080`
+
+To stop the container:
+
+```bash
+docker compose down
+```
+
 ## Usage
 
 1. **Enter GitLab instance URL** (e.g., `https://gitlab.com` or your self-hosted GitLab)

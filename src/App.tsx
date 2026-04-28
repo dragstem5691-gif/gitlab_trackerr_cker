@@ -242,7 +242,11 @@ function App() {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-6">
+      <main
+        className={`mx-auto px-4 py-8 sm:px-6 ${
+          page === 'ganttBuilder' ? 'max-w-[1440px] space-y-5' : 'max-w-6xl space-y-6'
+        }`}
+      >
         {page !== 'ganttBuilder' && !report && (
           <div className="text-center max-w-2xl mx-auto mb-6">
             <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 tracking-tight">

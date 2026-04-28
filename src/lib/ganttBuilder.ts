@@ -17,6 +17,8 @@ export interface GanttBuilderTaskAssignment {
   estimateHours: number;
   startDate: string;
   assigneeIds: string[];
+  personEstimates?: Record<string, number>;
+  personStartDates?: Record<string, string>;
 }
 
 export interface GanttBuilderTask {
@@ -223,13 +225,29 @@ export function createTaskAssignment(params: {
   estimateHours?: number;
   startDate?: string;
   assigneeIds?: string[];
+  personEstimates?: Record<string, number>;
+  personStartDates?: Record<string, string>;
 } = {}): GanttBuilderTaskAssignment {
+  const estimateHours = normalizeEstimateHours(params.estimateHours ?? DEFAULT_TASK_ESTIMATE_HOURS);
+  const assigneeIds = params.assigneeIds ?? [];
+  const startDate =
+    normalizeIsoDate(params.startDate ?? '') || new Date().toISOString().slice(0, 10);
   return {
     id: `assignment:${createId()}`,
     role: params.role ?? null,
-    estimateHours: normalizeEstimateHours(params.estimateHours ?? DEFAULT_TASK_ESTIMATE_HOURS),
-    startDate: normalizeIsoDate(params.startDate ?? '') || new Date().toISOString().slice(0, 10),
-    assigneeIds: params.assigneeIds ?? [],
+    estimateHours,
+    startDate,
+    assigneeIds,
+    personEstimates: buildNormalizedPersonEstimates(
+      assigneeIds,
+      estimateHours,
+      params.personEstimates
+    ),
+    personStartDates: buildNormalizedPersonStartDates(
+      assigneeIds,
+      startDate,
+      params.personStartDates
+    ),
   };
 }
 
@@ -339,7 +357,7 @@ export function getAssignmentEndDate(
   return participantIds.reduce<string>((latest, personId) => {
     const person = personId ? peopleById.get(personId) : undefined;
     const endDate = addWorkingDays(
-      assignment.startDate,
+      getAssignmentPersonStartDate(assignment, personId),
       getWorkDaysForHours(getAssignmentPersonHours(assignment, personId), getDailyCapacityHours(person)),
       nonWorkingDates
     );
@@ -436,7 +454,7 @@ export function getTaskScheduleEntries(
     for (const personId of participantIds) {
       const person = personId ? peopleById.get(personId) : undefined;
       let remaining = getAssignmentPersonHours(assignment, personId);
-      let cursor = nextWorkingDate(assignment.startDate, nonWorkingDates);
+      let cursor = nextWorkingDate(getAssignmentPersonStartDate(assignment, personId), nonWorkingDates);
       const dailyCapacity = getDailyCapacityHours(person);
 
       while (remaining > 0) {
@@ -489,7 +507,20 @@ export function getTaskLaneHours(task: GanttBuilderTask, personId: string | null
 
 export function getTaskTotalEstimateHours(task: GanttBuilderTask) {
   return roundHours(
-    task.assignments.reduce((total, assignment) => total + assignment.estimateHours, 0)
+    task.assignments.reduce((total, assignment) => {
+      if (assignment.assigneeIds.length === 0) {
+        return total + assignment.estimateHours;
+      }
+
+      return (
+        total +
+        assignment.assigneeIds.reduce(
+          (assignmentTotal, personId) =>
+            assignmentTotal + getAssignmentPersonHours(assignment, personId),
+          0
+        )
+      );
+    }, 0)
   );
 }
 
@@ -501,7 +532,15 @@ export function getAssignmentPersonHours(
     return assignment.assigneeIds.length === 0 ? assignment.estimateHours : 0;
   }
   if (!assignment.assigneeIds.includes(personId)) return 0;
-  return assignment.estimateHours;
+  return normalizeEstimateHours(assignment.personEstimates?.[personId] ?? assignment.estimateHours);
+}
+
+export function getAssignmentPersonStartDate(
+  assignment: GanttBuilderTaskAssignment,
+  personId: string | null
+) {
+  if (personId === null) return assignment.startDate;
+  return assignment.personStartDates?.[personId] ?? assignment.startDate;
 }
 
 export function countPlanWorkingDaysBetween(
@@ -657,7 +696,24 @@ function normalizeStoredAssignment(
     estimateHours?: unknown;
     startDate?: unknown;
     assigneeIds?: unknown;
+    personEstimates?: unknown;
+    personStartDates?: unknown;
   };
+
+  const assigneeIds = Array.isArray(assignment.assigneeIds)
+    ? Array.from(
+        new Set(
+          assignment.assigneeIds.filter(
+            (personId): personId is string =>
+              typeof personId === 'string' && validPersonIds.has(personId)
+          )
+        )
+      )
+    : [];
+  const estimateHours =
+    typeof assignment.estimateHours === 'number'
+      ? normalizeEstimateHours(assignment.estimateHours)
+      : DEFAULT_TASK_ESTIMATE_HOURS;
 
   return {
     id: typeof assignment.id === 'string' ? assignment.id : `assignment:${createId()}`,
@@ -665,26 +721,26 @@ function normalizeStoredAssignment(
       assignment.role === null || PROJECT_ROLE_OPTIONS.some((role) => role.id === assignment.role)
         ? (assignment.role as ProjectRole | null)
         : null,
-    estimateHours:
-      typeof assignment.estimateHours === 'number'
-        ? normalizeEstimateHours(assignment.estimateHours)
-        : DEFAULT_TASK_ESTIMATE_HOURS,
+    estimateHours,
     startDate: nextWorkingDate(
       typeof assignment.startDate === 'string' && normalizeIsoDate(assignment.startDate)
         ? assignment.startDate
         : fallbackStartDate,
       nonWorkingDates
     ),
-    assigneeIds: Array.isArray(assignment.assigneeIds)
-      ? Array.from(
-          new Set(
-            assignment.assigneeIds.filter(
-              (personId): personId is string =>
-                typeof personId === 'string' && validPersonIds.has(personId)
-            )
-          )
-        )
-      : [],
+    assigneeIds,
+    personEstimates: buildNormalizedPersonEstimates(
+      assigneeIds,
+      estimateHours,
+      isStoredPersonEstimates(assignment.personEstimates) ? assignment.personEstimates : undefined
+    ),
+    personStartDates: buildNormalizedPersonStartDates(
+      assigneeIds,
+      typeof assignment.startDate === 'string' && normalizeIsoDate(assignment.startDate)
+        ? assignment.startDate
+        : fallbackStartDate,
+      isStoredPersonStartDates(assignment.personStartDates) ? assignment.personStartDates : undefined
+    ),
   };
 }
 
@@ -697,6 +753,46 @@ function isStoredPerson(value: unknown): value is GanttBuilderPerson {
     (person.role === null || PROJECT_ROLE_OPTIONS.some((role) => role.id === person.role)) &&
     (person.source === 'gitlab' || person.source === 'manual') &&
     typeof person.weeklyCapacityHours === 'number'
+  );
+}
+
+function isStoredPersonEstimates(value: unknown): value is Record<string, number> {
+  if (!value || typeof value !== 'object') return false;
+  return Object.values(value).every((hours) => typeof hours === 'number');
+}
+
+function isStoredPersonStartDates(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== 'object') return false;
+  return Object.values(value).every((date) => typeof date === 'string');
+}
+
+function buildNormalizedPersonEstimates(
+  assigneeIds: string[],
+  fallbackEstimateHours: number,
+  personEstimates?: Record<string, number>
+) {
+  if (assigneeIds.length === 0) return undefined;
+
+  return Object.fromEntries(
+    assigneeIds.map((personId) => [
+      personId,
+      normalizeEstimateHours(personEstimates?.[personId] ?? fallbackEstimateHours),
+    ])
+  );
+}
+
+function buildNormalizedPersonStartDates(
+  assigneeIds: string[],
+  fallbackStartDate: string,
+  personStartDates?: Record<string, string>
+) {
+  if (assigneeIds.length === 0) return undefined;
+
+  return Object.fromEntries(
+    assigneeIds.map((personId) => [
+      personId,
+      normalizeIsoDate(personStartDates?.[personId] ?? '') || fallbackStartDate,
+    ])
   );
 }
 

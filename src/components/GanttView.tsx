@@ -8,6 +8,8 @@ const MAX_VISIBLE_DAYS = 30;
 
 interface DensityConfig {
   dayCellWidth: number;
+  dayLabelMeasureFont: string;
+  dayLabelHorizontalPadding: number;
   trackHeight: number;
   trackGap: number;
   rowVerticalPadding: number;
@@ -22,7 +24,9 @@ interface DensityConfig {
 }
 
 const DEFAULT_DENSITY: DensityConfig = {
-  dayCellWidth: 30,
+  dayCellWidth: 48,
+  dayLabelMeasureFont: '600 9px "Segoe UI", system-ui, sans-serif',
+  dayLabelHorizontalPadding: 12,
   trackHeight: 14,
   trackGap: 3,
   rowVerticalPadding: 5,
@@ -37,7 +41,9 @@ const DEFAULT_DENSITY: DensityConfig = {
 };
 
 const FOCUSED_DENSITY: DensityConfig = {
-  dayCellWidth: 24,
+  dayCellWidth: 44,
+  dayLabelMeasureFont: '600 9px "Segoe UI", system-ui, sans-serif',
+  dayLabelHorizontalPadding: 12,
   trackHeight: 10,
   trackGap: 2,
   rowVerticalPadding: 3,
@@ -506,11 +512,9 @@ function GanttTaskRow({
             trackIndex * (density.trackHeight + density.trackGap);
 
           return track.days.map((day) => {
-            const left = day.dateIndex * density.dayCellWidth + 2;
-            const width = density.dayCellWidth - 4;
             const intensity = Math.min(1, day.seconds / WORK_DAY_SECONDS);
             const dayHoursLabel = formatHours(day.seconds);
-            const showLabel = width >= 22 && density.trackHeight >= 12;
+            const left = day.dateIndex * density.dayCellWidth + density.dayCellWidth / 2;
 
             return (
               <div
@@ -519,18 +523,20 @@ function GanttTaskRow({
                 style={{
                   left,
                   top,
-                  width,
+                  transform: 'translateX(-50%)',
+                  minWidth: Math.max(18, density.dayCellWidth - 4),
                   height: density.trackHeight,
                   backgroundColor: color.fill,
                   borderColor: color.border,
                   color: color.text,
                   opacity: 0.55 + 0.45 * intensity,
+                  zIndex: trackIndex + 1,
                 }}
                 title={`${track.userName}: ${dayHoursLabel} on ${formatLongDate(day.date)} (${Math.round(intensity * 100)}% of 8h workday)`}
               >
-                {showLabel && (
-                  <span className="truncate px-0.5 tabular-nums">{dayHoursLabel}</span>
-                )}
+                <span className="inline-block min-w-max whitespace-nowrap px-1 tabular-nums">
+                  {dayHoursLabel}
+                </span>
               </div>
             );
           });
@@ -669,7 +675,7 @@ function buildGanttModel(
   selectedUserId: string | null,
   selectedDate: string | null
 ): GanttModel {
-  const density = selectedUserId ? FOCUSED_DENSITY : DEFAULT_DENSITY;
+  const baseDensity = selectedUserId ? FOCUSED_DENSITY : DEFAULT_DENSITY;
   const dates = selectedDate
     ? [selectedDate]
     : enumerateDates(report.period.start, report.period.end);
@@ -768,6 +774,11 @@ function buildGanttModel(
       left.issueTitle.localeCompare(right.issueTitle)
   );
 
+  const density = {
+    ...baseDensity,
+    dayCellWidth: calculateDayCellWidth(rows, baseDensity),
+  };
+
   return {
     dates,
     rows,
@@ -826,6 +837,28 @@ function calculateTaskColumnWidth(
     Math.ceil(widest + density.taskColumnPadding),
     density.taskColumnMinWidth,
     density.taskColumnMaxWidth
+  );
+}
+
+function calculateDayCellWidth(rows: GanttRow[], density: DensityConfig) {
+  let widest = density.dayCellWidth;
+
+  for (const row of rows) {
+    for (const track of row.tracks) {
+      for (const day of track.days) {
+        widest = Math.max(widest, calculateDayLabelWidth(formatHours(day.seconds), density));
+      }
+    }
+  }
+
+  return widest;
+}
+
+function calculateDayLabelWidth(label: string, density: DensityConfig) {
+  const labelWidth = measureTextWidth(label, density.dayLabelMeasureFont);
+  return Math.max(
+    density.dayCellWidth,
+    Math.ceil(labelWidth + density.dayLabelHorizontalPadding)
   );
 }
 

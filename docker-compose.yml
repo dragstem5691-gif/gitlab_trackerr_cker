@@ -1,0 +1,8 @@
+services:
+  gitlab-tracker:
+    build:
+      context: .
+    image: gitlab-tracker:local
+    ports:
+      - "8080:80"
+    restart: unless-stopped

@@ -4,6 +4,23 @@
 
 This is a client-only app with no backend. Deploy the `dist/` folder to any static host.
 
+## Docker
+
+Build and run the production image locally:
+
+```bash
+docker compose up -d --build
+```
+
+The app is served by nginx on `http://localhost:8080`.
+
+To build the image without compose:
+
+```bash
+docker build -t gitlab-tracker:local .
+docker run --rm -p 8080:80 gitlab-tracker:local
+```
+
 ### Netlify
 
 ```bash

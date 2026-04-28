@@ -55,13 +55,13 @@ export function FilterForm({ initialValues, isLoading, onSubmit, onDemo, error }
         <Field
           label="GitLab instance URL"
           icon={<Server className="w-4 h-4" />}
-          hint="e.g. https://gitlab.example.com"
+          hint="Link to the root GitLab project that contains all boards: PM, backend, frontend, and others, e.g. https://gitlab.example.com/crypto_payments/bps/"
         >
           <input
             type="text"
             value={values.instanceUrl}
             onChange={(e) => update('instanceUrl', e.target.value)}
-            placeholder="https://gitlab.com"
+            placeholder="https://gitlab.example.com/crypto_payments/bps/"
             className={`w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-white text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-200 focus:border-sky-400 transition ${fieldError(
               !values.instanceUrl.trim()
             )}`}
@@ -87,14 +87,14 @@ export function FilterForm({ initialValues, isLoading, onSubmit, onDemo, error }
         <Field
           label="Main PM project"
           icon={<FolderGit2 className="w-4 h-4" />}
-          hint="Full URL or group/path"
+          hint="Link to the specific PM subproject inside the main project. Example: https://gitlab.example.com/crypto_payments/bps/bps-pm"
           className="md:col-span-2"
         >
           <input
             type="text"
             value={values.projectPath}
             onChange={(e) => update('projectPath', e.target.value)}
-            placeholder="https://gitlab.com/group/project-pm"
+            placeholder="https://gitlab.example.com/crypto_payments/bps/bps-pm"
             className={`w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-white text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-200 focus:border-sky-400 transition ${fieldError(
               !values.projectPath.trim()
             )}`}
