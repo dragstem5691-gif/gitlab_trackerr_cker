@@ -52,6 +52,24 @@ To stop the container:
 docker compose down
 ```
 
+To rebuild and refresh an existing Docker deployment:
+
+```bash
+cd "C:\Users\NIKITA\Desktop\gitlab tracker 3\gitlab_trackerr_cker"
+docker compose down
+docker build -t gitlab-tracker:local .
+docker compose up -d --force-recreate
+```
+
+Or in one command:
+
+```bash
+cd "C:\Users\NIKITA\Desktop\gitlab tracker 3\gitlab_trackerr_cker"
+docker compose up -d --build --force-recreate
+```
+
+After updating, do a hard refresh in the browser with `Ctrl+F5` to avoid old cached JS assets.
+
 ## Usage
 
 1. **Enter GitLab instance URL** (e.g., `https://gitlab.com` or your self-hosted GitLab)

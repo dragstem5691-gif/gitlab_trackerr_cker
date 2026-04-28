@@ -14,12 +14,19 @@ import {
   ListPlus,
   Plus,
   Save,
+  RefreshCw,
   SlidersHorizontal,
   Trash2,
   UserPlus,
   Users,
 } from 'lucide-react';
 import type { ReportResult } from '../types';
+import {
+  GitLabClient,
+  type GitLabGanttIssue,
+  type GitLabGanttIssueStrategy,
+  type GitLabGanttMilestone,
+} from '../lib/gitlab';
 import { PROJECT_ROLE_OPTIONS, type ProjectRole } from '../lib/planning';
 import {
   DEFAULT_TASK_ESTIMATE_HOURS,
@@ -27,6 +34,7 @@ import {
   buildGanttBuilderCalendarDates,
   countPlanWorkingDaysBetween,
   createGanttBuilderContext,
+  createGitLabGanttBuilderPlan,
   createManualPerson,
   createTask,
   createTaskAssignment,
@@ -36,6 +44,7 @@ import {
   getAssignmentPersonHours,
   getRoleLabel,
   getTaskLaneHours,
+  getTaskEndDate,
   getTaskScheduleEntries,
   getTaskTotalEstimateHours,
   isPlanWorkingDay,
@@ -55,10 +64,20 @@ import {
 
 interface Props {
   report?: ReportResult | null;
+  gitLabConfig?: GanttGitLabConfig | null;
   onBack: () => void;
 }
 
+interface GanttGitLabConfig {
+  instanceOrigin: string;
+  token: string;
+  mainScopePath: string;
+  pmProjectPath: string;
+}
+
 type RoleFilter = ProjectRole | 'all' | 'none';
+type BuilderMode = 'manual' | 'gitlab';
+type BuilderPage = 'tasks' | 'weekly' | 'calendar' | 'matrix';
 type InteractionMode = 'move' | 'resize';
 
 interface DragState {
@@ -95,10 +114,26 @@ const BAR_TOP_OFFSET = 12;
 const BAR_SLOT_GAP = 8;
 const BAR_TITLE_MAX_LENGTH = 12;
 const PM_ROLES = new Set<ProjectRole>(['pm', 'leadPm', 'analytic']);
+const ALL_TASK_ASSIGNMENTS_ID = '__all_task_assignments__';
 
-export function GanttBuilderView({ report, onBack }: Props) {
-  const context = useMemo(() => createGanttBuilderContext(report ?? undefined), [report]);
+export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
+  const baseContext = useMemo(() => createGanttBuilderContext(report ?? undefined), [report]);
+  const [builderMode, setBuilderMode] = useState<BuilderMode>('manual');
+  const [gitLabPeriod, setGitLabPeriod] = useState(baseContext.period);
+  const context = useMemo(
+    () =>
+      builderMode === 'gitlab'
+        ? {
+            ...baseContext,
+            projectPath: gitLabConfig?.mainScopePath ?? baseContext.projectPath,
+            period: gitLabPeriod,
+            source: 'report' as const,
+          }
+        : baseContext,
+    [baseContext, builderMode, gitLabConfig?.mainScopePath, gitLabPeriod]
+  );
   const [plan, setPlan] = useState<GanttBuilderPlan>(() => loadGanttBuilderPlan(context));
+  const [savedPlanJson, setSavedPlanJson] = useState(() => JSON.stringify(plan));
   const [taskTitle, setTaskTitle] = useState('');
   const [taskEstimate, setTaskEstimate] = useState(String(DEFAULT_TASK_ESTIMATE_HOURS));
   const [taskRole, setTaskRole] = useState<ProjectRole | null>(null);
@@ -107,18 +142,108 @@ export function GanttBuilderView({ report, onBack }: Props) {
   const [newPersonName, setNewPersonName] = useState('');
   const [personFilter, setPersonFilter] = useState('all');
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('all');
+  const [builderPage, setBuilderPage] = useState<BuilderPage>('calendar');
   const [dragState, setDragState] = useState<DragState | null>(null);
+  const [gitLabIssues, setGitLabIssues] = useState<GitLabGanttIssue[]>([]);
+  const [gitLabMilestones, setGitLabMilestones] = useState<GitLabGanttMilestone[]>([]);
+  const [taskSelectionStrategy, setTaskSelectionStrategy] =
+    useState<GitLabGanttIssueStrategy>('milestone');
+  const [selectedMilestoneTitle, setSelectedMilestoneTitle] = useState('');
+  const [activeWindowDays, setActiveWindowDays] = useState(45);
+  const [gitLabLoading, setGitLabLoading] = useState(false);
+  const [gitLabError, setGitLabError] = useState<string | null>(null);
+  const [gitLabNotice, setGitLabNotice] = useState<string | null>(null);
   const rowsRef = useRef<HTMLDivElement | null>(null);
 
   const storageKey = useMemo(() => getGanttBuilderStorageKey(context), [context]);
 
   useEffect(() => {
-    setPlan(loadGanttBuilderPlan(context));
-  }, [context, storageKey]);
+    if (builderMode === 'gitlab') return;
+    const nextPlan = loadGanttBuilderPlan(context);
+    setPlan(nextPlan);
+    setSavedPlanJson(JSON.stringify(nextPlan));
+  }, [builderMode, context, storageKey]);
 
   useEffect(() => {
-    saveGanttBuilderPlan(context, plan);
-  }, [context, plan]);
+    setGitLabPeriod(baseContext.period);
+  }, [baseContext.period]);
+
+  const loadGitLabPlan = async (
+    options: {
+      milestoneTitle?: string;
+      strategy?: GitLabGanttIssueStrategy;
+      windowDays?: number;
+    } = {}
+  ) => {
+    if (!gitLabConfig) return;
+
+    const milestoneTitle = options.milestoneTitle ?? selectedMilestoneTitle;
+    const strategy = options.strategy ?? taskSelectionStrategy;
+    const windowDays = options.windowDays ?? activeWindowDays;
+    const updatedAfter = getUpdatedAfterIso(windowDays);
+
+    setGitLabLoading(true);
+    setGitLabError(null);
+    setGitLabNotice(null);
+
+    try {
+      const client = new GitLabClient(gitLabConfig.instanceOrigin, gitLabConfig.token);
+      const [mainMilestones, pmMilestones] = await Promise.all([
+        client.fetchGanttMilestones(gitLabConfig.mainScopePath),
+        client.fetchGanttMilestones(gitLabConfig.pmProjectPath),
+      ]);
+
+      const milestones = dedupeMilestones([...mainMilestones, ...pmMilestones]);
+      const shouldLoadIssues = strategy !== 'milestone' || Boolean(milestoneTitle);
+      const [mainIssues, pmIssues] = shouldLoadIssues
+        ? await Promise.all([
+            client.fetchGanttIssuesFromScope(gitLabConfig.mainScopePath, {
+              strategy,
+              milestoneTitle: strategy === 'milestone' ? milestoneTitle : null,
+              updatedAfter,
+            }),
+            client.fetchGanttIssuesFromProject(gitLabConfig.pmProjectPath, {
+              strategy,
+              milestoneTitle: strategy === 'milestone' ? milestoneTitle : null,
+              updatedAfter,
+            }),
+          ])
+        : [[], []];
+      const issues = dedupeGitLabIssues([...mainIssues, ...pmIssues]);
+      const selectedMilestone = milestones.find((milestone) => milestone.title === milestoneTitle);
+      const nextPeriod =
+        selectedMilestone?.startDate && selectedMilestone?.dueDate
+          ? { start: selectedMilestone.startDate, end: selectedMilestone.dueDate }
+          : baseContext.period;
+      const nextContext = {
+        ...baseContext,
+        projectPath: gitLabConfig.mainScopePath,
+        period: nextPeriod,
+        source: 'report' as const,
+      };
+      const previousPlan = loadGanttBuilderPlan(nextContext);
+      const nextPlan = createGitLabGanttBuilderPlan(nextContext, issues, previousPlan);
+
+      setGitLabMilestones(milestones);
+      setGitLabIssues(issues);
+      setGitLabPeriod(nextPeriod);
+      setPlan(nextPlan);
+      setSavedPlanJson(JSON.stringify(nextPlan));
+      if (strategy === 'milestone' && !milestoneTitle) {
+        setGitLabNotice('Choose a milestone to load tasks. This prevents loading old GitLab tails.');
+      }
+    } catch (error) {
+      setGitLabError(error instanceof Error ? error.message : 'Failed to load GitLab Gantt data');
+    } finally {
+      setGitLabLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (builderMode !== 'gitlab' || !gitLabConfig) return;
+    void loadGitLabPlan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [builderMode, gitLabConfig?.instanceOrigin, gitLabConfig?.mainScopePath, gitLabConfig?.pmProjectPath]);
 
   const dates = useMemo(() => buildGanttBuilderCalendarDates(plan, context), [context, plan]);
   const dateIndexByDate = useMemo(
@@ -176,22 +301,42 @@ export function GanttBuilderView({ report, onBack }: Props) {
   const visibleLaneIds = useMemo(() => new Set(lanes.map((lane) => lane.id)), [lanes]);
   const visibleTasks = useMemo(
     () =>
-      plan.tasks.filter((task) =>
-        taskMatchesFilters(task, {
-          personFilter,
-          roleFilter,
-          visibleLaneIds,
-        })
-      ),
+      plan.tasks
+        .filter((task) =>
+          taskMatchesFilters(task, {
+            personFilter,
+            roleFilter,
+            visibleLaneIds,
+          })
+        )
+        .sort(sortTasksByPlanOrder),
     [personFilter, plan.tasks, roleFilter, visibleLaneIds]
   );
   const overloadedWeeks = Object.values(capacityByPersonId)
     .flat()
     .filter((week) => week.overloaded).length;
+  const planWarnings = useMemo(() => buildPlanWarnings(plan, context), [context, plan]);
+  const hasUnsavedChanges = JSON.stringify(plan) !== savedPlanJson;
   const unassignedTaskCount = plan.tasks.filter((task) =>
     task.assignments.some((assignment) => assignment.assigneeIds.length === 0)
   ).length;
   const timelineWidth = dates.length * DAY_WIDTH;
+
+  const handleSavePlan = () => {
+    const changedTasks = countChangedTasks(savedPlanJson, plan);
+    const message = [
+      `Save local ${builderMode === 'gitlab' ? 'GitLab-based' : 'manual'} Gantt plan?`,
+      `${changedTasks} changed task(s).`,
+      planWarnings.length > 0 ? `${planWarnings.length} warning(s) will remain highlighted.` : null,
+      builderMode === 'gitlab' ? 'GitLab will not be changed.' : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    if (!window.confirm(message)) return;
+    saveGanttBuilderPlan(context, plan);
+    setSavedPlanJson(JSON.stringify(plan));
+  };
 
   useEffect(() => {
     if (!dragState) return;
@@ -207,6 +352,15 @@ export function GanttBuilderView({ report, onBack }: Props) {
       setPlan((current) => {
         const task = current.tasks.find((candidate) => candidate.id === dragState.taskId);
         if (!task) return current;
+
+        if (dragState.assignmentId === ALL_TASK_ASSIGNMENTS_ID) {
+          const startIndex = clamp(dragState.originStartIndex + deltaDays, 0, dates.length - 1);
+          return updateTaskAllAssignmentStartDates(
+            current,
+            task.id,
+            nextWorkingDate(dates[startIndex], current.nonWorkingDates)
+          );
+        }
 
         if (dragState.mode === 'resize') {
           const startIndex = clamp(dragState.originStartIndex, 0, dates.length - 1);
@@ -352,6 +506,21 @@ export function GanttBuilderView({ report, onBack }: Props) {
     event.preventDefault();
     event.stopPropagation();
 
+    if (assignmentId === ALL_TASK_ASSIGNMENTS_ID) {
+      const earliestStartDate = getTaskEarliestStartDate(task);
+      setDragState({
+        taskId: task.id,
+        assignmentId,
+        laneId,
+        mode,
+        originClientX: event.clientX,
+        originStartIndex: dateIndexByDate.get(earliestStartDate) ?? 0,
+        originWorkDays: 1,
+        originEstimateHours: getTaskTotalEstimateHours(task),
+      });
+      return;
+    }
+
     const assignee = laneId === UNASSIGNED_LANE_ID ? undefined : peopleById.get(laneId);
     const assignment = task.assignments.find((candidate) => candidate.id === assignmentId);
     if (!assignment) return;
@@ -381,8 +550,9 @@ export function GanttBuilderView({ report, onBack }: Props) {
             <div>
               <h2 className="text-base font-semibold text-white">Gantt Builder</h2>
               <p className="mt-1 max-w-3xl text-sm text-slate-300">
-                Build a manual plan from tasks, estimates, assignees, and weekly capacity. Bars can
-                be dragged between people and resized by workday increments.
+                {builderMode === 'gitlab'
+                  ? 'Use GitLab as the task source and freely edit a local plan layer. GitLab stays unchanged.'
+                  : 'Build a manual plan from tasks, estimates, assignees, and weekly capacity. Bars can be dragged between people and resized by workday increments.'}
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-200">
                 <span className="rounded-md border border-white/10 bg-white/10 px-2 py-1">
@@ -398,20 +568,52 @@ export function GanttBuilderView({ report, onBack }: Props) {
                 )}
                 <span className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/10 px-2 py-1">
                   <Save className="h-3.5 w-3.5" />
-                  Saved in localStorage
+                  {hasUnsavedChanges ? 'Unsaved local changes' : 'Saved locally'}
                 </span>
               </div>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onBack}
-            className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            {report ? 'Back to report' : 'Back'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex rounded-lg border border-white/15 bg-white/10 p-0.5">
+              <button
+                type="button"
+                onClick={() => setBuilderMode('manual')}
+                className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                  builderMode === 'manual' ? 'bg-white text-slate-900' : 'text-white hover:bg-white/10'
+                }`}
+              >
+                Manual
+              </button>
+              <button
+                type="button"
+                onClick={() => setBuilderMode('gitlab')}
+                disabled={!gitLabConfig}
+                className={`rounded-md px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                  builderMode === 'gitlab' ? 'bg-white text-slate-900' : 'text-white hover:bg-white/10'
+                }`}
+              >
+                Use GitLab
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={handleSavePlan}
+              disabled={!hasUnsavedChanges}
+              className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-sky-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Save className="h-4 w-4" />
+              Save local plan
+            </button>
+            <button
+              type="button"
+              onClick={onBack}
+              className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              {report ? 'Back to report' : 'Back'}
+            </button>
+          </div>
           </div>
         </div>
       </section>
@@ -423,8 +625,123 @@ export function GanttBuilderView({ report, onBack }: Props) {
         <StatCard icon={<SlidersHorizontal className="h-5 w-5" />} label="Overloaded weeks" value={String(overloadedWeeks)} tone={overloadedWeeks > 0 ? 'rose' : 'emerald'} />
       </div>
 
+      {builderMode === 'gitlab' && planWarnings.length > 0 && (
+        <section className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <div className="font-semibold">GitLab reality checks</div>
+          <div className="mt-1 text-xs text-amber-800">
+            These warnings do not block planning. They only highlight places where the local plan
+            differs from GitLab facts.
+          </div>
+          <ul className="mt-3 grid gap-1.5 text-xs">
+            {planWarnings.slice(0, 8).map((warning) => (
+              <li key={warning.id} className="rounded-lg border border-amber-200 bg-white/70 px-3 py-2">
+                {warning.message}
+              </li>
+            ))}
+          </ul>
+          {planWarnings.length > 8 && (
+            <div className="mt-2 text-xs text-amber-800">
+              +{planWarnings.length - 8} more warning(s) in the editable task list.
+            </div>
+          )}
+        </section>
+      )}
+
       <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[380px_minmax(0,1fr)]">
         <aside className="space-y-4">
+          {builderMode === 'gitlab' && (
+            <section className="overflow-hidden rounded-xl border border-sky-200 bg-sky-50/50 shadow-sm">
+              <div className="border-b border-sky-200 bg-sky-100/80 px-4 py-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-sky-950">
+                  <RefreshCw className="h-4 w-4" />
+                  GitLab source
+                </div>
+                <p className="mt-1 text-xs text-sky-800/80">
+                  Tasks are loaded from GitLab and saved only as a local plan overlay.
+                </p>
+              </div>
+              <div className="space-y-3 p-4">
+                <FieldLabel label="Task selection strategy">
+                  <select
+                    value={taskSelectionStrategy}
+                    onChange={(event) => {
+                      const nextStrategy = event.target.value as GitLabGanttIssueStrategy;
+                      setTaskSelectionStrategy(nextStrategy);
+                      void loadGitLabPlan({ strategy: nextStrategy });
+                    }}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-sky-200"
+                  >
+                    <option value="milestone">Milestone only (recommended)</option>
+                    <option value="active">Active window</option>
+                  </select>
+                </FieldLabel>
+                <FieldLabel label="Milestone">
+                  <select
+                    value={selectedMilestoneTitle}
+                    onChange={(event) => {
+                      const nextTitle = event.target.value;
+                      setSelectedMilestoneTitle(nextTitle);
+                      void loadGitLabPlan({ milestoneTitle: nextTitle });
+                    }}
+                    disabled={taskSelectionStrategy !== 'milestone'}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-sky-200"
+                  >
+                    <option value="">Choose milestone...</option>
+                    {gitLabMilestones.map((milestone) => (
+                      <option key={milestone.id} value={milestone.title}>
+                        {milestone.title}
+                      </option>
+                    ))}
+                  </select>
+                </FieldLabel>
+                {taskSelectionStrategy === 'active' && (
+                  <FieldLabel label="Recently closed window">
+                    <select
+                      value={String(activeWindowDays)}
+                      onChange={(event) => {
+                        const nextDays = Number(event.target.value);
+                        setActiveWindowDays(nextDays);
+                        void loadGitLabPlan({ strategy: 'active', windowDays: nextDays });
+                      }}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-sky-200"
+                    >
+                      <option value="14">Opened + closed in last 14 days</option>
+                      <option value="30">Opened + closed in last 30 days</option>
+                      <option value="45">Opened + closed in last 45 days</option>
+                      <option value="90">Opened + closed in last 90 days</option>
+                    </select>
+                  </FieldLabel>
+                )}
+                <div className="rounded-lg border border-sky-200 bg-white p-3 text-xs text-sky-900">
+                  <div>Main scope: {gitLabConfig?.mainScopePath ?? 'not available'}</div>
+                  <div>PM project: {gitLabConfig?.pmProjectPath ?? 'not available'}</div>
+                  <div>Strategy: {getStrategyLabel(taskSelectionStrategy)}</div>
+                  <div>Loaded issues: {gitLabIssues.length}</div>
+                </div>
+                {gitLabError && (
+                  <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                    {gitLabError}
+                  </div>
+                )}
+                {gitLabNotice && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    {gitLabNotice}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void loadGitLabPlan()}
+                  disabled={!gitLabConfig || gitLabLoading}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-sky-700 px-3 py-2 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-4 w-4 ${gitLabLoading ? 'animate-spin' : ''}`} />
+                  {gitLabLoading ? 'Loading GitLab...' : 'Refresh from GitLab'}
+                </button>
+              </div>
+            </section>
+          )}
+
+          {builderMode === 'manual' && (
           <section className="overflow-hidden rounded-xl border border-sky-200 bg-sky-50/50 shadow-sm">
             <div className="border-b border-sky-200 bg-sky-100/80 px-4 py-3">
               <div className="flex items-center gap-2 text-sm font-semibold text-sky-950">
@@ -473,7 +790,9 @@ export function GanttBuilderView({ report, onBack }: Props) {
               </button>
             </div>
           </section>
+          )}
 
+          {builderMode === 'manual' && (
           <section className="overflow-hidden rounded-xl border border-violet-200 bg-violet-50/50 shadow-sm">
             <div className="border-b border-violet-200 bg-violet-100/80 px-4 py-3">
               <div className="flex items-center gap-2 text-sm font-semibold text-violet-950">
@@ -505,6 +824,7 @@ export function GanttBuilderView({ report, onBack }: Props) {
             </button>
             </div>
           </section>
+          )}
 
           <section className="overflow-hidden rounded-xl border border-emerald-200 bg-emerald-50/50 shadow-sm">
             <div className="border-b border-emerald-200 bg-emerald-100/80 px-4 py-3">
@@ -603,37 +923,51 @@ export function GanttBuilderView({ report, onBack }: Props) {
             </div>
           </div>
 
-          <TaskTableSection
-            tasks={visibleTasks}
-            people={plan.people}
-            peopleById={peopleById}
-            nonWorkingDates={plan.nonWorkingDates}
-            onTaskChange={(taskId, patch) =>
-              setPlan((current) => updatePlanTask(current, taskId, patch))
-            }
-            onAssignmentChange={(taskId, assignmentId, patch) =>
-              setPlan((current) =>
-                updateTaskAssignment(current, taskId, assignmentId, patch)
-              )
-            }
-            onAssignmentAdd={(taskId) =>
-              setPlan((current) => addTaskAssignment(current, taskId))
-            }
-            onAssignmentDelete={(taskId, assignmentId) =>
-              setPlan((current) => deleteTaskAssignment(current, taskId, assignmentId))
-            }
-            onTaskDelete={(taskId) => setPlan((current) => deleteTask(current, taskId))}
+          <BuilderPageNav
+            activePage={builderPage}
+            onChange={setBuilderPage}
+            taskCount={visibleTasks.length}
+            peopleCount={filteredPeople.length}
+            dateCount={dates.length}
+            overloadedWeeks={overloadedWeeks}
           />
 
-          <WeeklyLoadPanel
-            people={filteredPeople}
-            tasks={plan.tasks}
-            peopleById={peopleById}
-            nonWorkingDates={plan.nonWorkingDates}
-            loadsByPersonId={capacityByPersonId}
-          />
+          {builderPage === 'tasks' && (
+            <TaskTableSection
+              tasks={visibleTasks}
+              people={plan.people}
+              peopleById={peopleById}
+              nonWorkingDates={plan.nonWorkingDates}
+              onTaskChange={(taskId, patch) =>
+                setPlan((current) => updatePlanTask(current, taskId, patch))
+              }
+              onAssignmentChange={(taskId, assignmentId, patch) =>
+                setPlan((current) =>
+                  updateTaskAssignment(current, taskId, assignmentId, patch)
+                )
+              }
+              onAssignmentAdd={(taskId) =>
+                setPlan((current) => addTaskAssignment(current, taskId))
+              }
+              onAssignmentDelete={(taskId, assignmentId) =>
+                setPlan((current) => deleteTaskAssignment(current, taskId, assignmentId))
+              }
+              onTaskDelete={(taskId) => setPlan((current) => deleteTask(current, taskId))}
+            />
+          )}
 
-          <section className="overflow-hidden rounded-xl border border-indigo-200 bg-white shadow-sm">
+          {builderPage === 'weekly' && (
+            <WeeklyLoadPanel
+              people={filteredPeople}
+              tasks={plan.tasks}
+              peopleById={peopleById}
+              nonWorkingDates={plan.nonWorkingDates}
+              loadsByPersonId={capacityByPersonId}
+            />
+          )}
+
+          {builderPage === 'calendar' && (
+            <section className="overflow-hidden rounded-xl border border-indigo-200 bg-white shadow-sm">
             <div className="border-b border-indigo-200 bg-indigo-50 px-4 py-3">
               <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                 <div>
@@ -726,18 +1060,129 @@ export function GanttBuilderView({ report, onBack }: Props) {
               </div>
             )}
           </section>
+          )}
 
-          <TaskDateMatrix
-            tasks={visibleTasks}
-            dates={dates}
-            peopleById={peopleById}
-            nonWorkingDates={plan.nonWorkingDates}
-            colorsByPersonId={colorsByPersonId}
-          />
+          {builderPage === 'matrix' && (
+            <TaskDateMatrix
+              tasks={visibleTasks}
+              dates={dates}
+              dateIndexByDate={dateIndexByDate}
+              peopleById={peopleById}
+              nonWorkingDates={plan.nonWorkingDates}
+              colorsByPersonId={colorsByPersonId}
+              onTaskPointerDown={handleTaskPointerDown}
+              onTaskReorder={(draggedTaskId, targetTaskId) =>
+                setPlan((current) => reorderPlanTasks(current, draggedTaskId, targetTaskId))
+              }
+            />
+          )}
 
         </section>
       </div>
     </div>
+  );
+}
+
+function BuilderPageNav({
+  activePage,
+  onChange,
+  taskCount,
+  peopleCount,
+  dateCount,
+  overloadedWeeks,
+}: {
+  activePage: BuilderPage;
+  onChange: (page: BuilderPage) => void;
+  taskCount: number;
+  peopleCount: number;
+  dateCount: number;
+  overloadedWeeks: number;
+}) {
+  const pages: {
+    id: BuilderPage;
+    label: string;
+    description: string;
+    meta: string;
+    icon: ReactNode;
+  }[] = [
+    {
+      id: 'tasks',
+      label: 'Task table',
+      description: 'Edit task metadata, roles, estimates, dates, and assignees.',
+      meta: `${taskCount} task(s)`,
+      icon: <ListPlus className="h-4 w-4" />,
+    },
+    {
+      id: 'weekly',
+      label: 'Weekly capacity',
+      description: 'Review workload and overload by person and week.',
+      meta: overloadedWeeks > 0 ? `${overloadedWeeks} overload(s)` : `${peopleCount} people`,
+      icon: <Users className="h-4 w-4" />,
+    },
+    {
+      id: 'calendar',
+      label: 'Calendar plan',
+      description: 'Drag bars across dates and people; resize duration.',
+      meta: `${dateCount} day(s)`,
+      icon: <CalendarRange className="h-4 w-4" />,
+    },
+    {
+      id: 'matrix',
+      label: 'Task/date',
+      description: 'See scheduled work as task rows and date columns.',
+      meta: `${taskCount} x ${dateCount}`,
+      icon: <SlidersHorizontal className="h-4 w-4" />,
+    },
+  ];
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
+        <div className="text-sm font-semibold text-slate-900">Builder pages</div>
+        <p className="mt-1 text-xs text-slate-500">
+          Switch between focused workspaces without changing the saved plan.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 gap-2 p-3 md:grid-cols-2 xl:grid-cols-4">
+        {pages.map((page) => {
+          const active = activePage === page.id;
+          return (
+            <button
+              key={page.id}
+              type="button"
+              onClick={() => onChange(page.id)}
+              aria-pressed={active}
+              className={`rounded-xl border px-3 py-3 text-left transition ${
+                active
+                  ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                  : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+                      active ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-500'
+                    }`}
+                  >
+                    {page.icon}
+                  </span>
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold">{page.label}</div>
+                    <div className={`mt-0.5 text-[11px] ${active ? 'text-slate-300' : 'text-slate-500'}`}>
+                      {page.meta}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <p className={`mt-2 text-xs leading-5 ${active ? 'text-slate-300' : 'text-slate-500'}`}>
+                {page.description}
+              </p>
+            </button>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -929,6 +1374,9 @@ function GanttLaneRow({
                 >
                   {titleLabel}
                 </div>
+                <div className="truncate text-[8px] font-semibold leading-3 opacity-75">
+                  {getTaskBoardLabel(task)}
+                </div>
               </div>
               <button
                 type="button"
@@ -950,17 +1398,29 @@ function GanttLaneRow({
 function TaskDateMatrix({
   tasks,
   dates,
+  dateIndexByDate,
   peopleById,
   nonWorkingDates,
   colorsByPersonId,
+  onTaskPointerDown,
+  onTaskReorder,
 }: {
   tasks: GanttBuilderTask[];
   dates: string[];
+  dateIndexByDate: Map<string, number>;
   peopleById: Map<string, GanttBuilderPerson>;
   nonWorkingDates: string[];
   colorsByPersonId: Record<string, PersonColor>;
+  onTaskPointerDown: (
+    event: ReactPointerEvent,
+    laneId: string,
+    task: GanttBuilderTask,
+    assignmentId: string,
+    mode: InteractionMode
+  ) => void;
+  onTaskReorder: (draggedTaskId: string, targetTaskId: string) => void;
 }) {
-  const timelineWidth = dates.length * MATRIX_DAY_WIDTH;
+  const timelineWidth = dates.length * DAY_WIDTH;
 
   return (
     <section className="overflow-hidden rounded-xl border border-cyan-200 bg-white shadow-sm">
@@ -997,7 +1457,7 @@ function TaskDateMatrix({
                 className="grid shrink-0"
                 style={{
                   width: timelineWidth,
-                  gridTemplateColumns: `repeat(${dates.length}, ${MATRIX_DAY_WIDTH}px)`,
+                  gridTemplateColumns: `repeat(${dates.length}, ${DAY_WIDTH}px)`,
                 }}
               >
                 {dates.map((date) => (
@@ -1031,81 +1491,111 @@ function TaskDateMatrix({
 
             <div className="divide-y divide-slate-100">
               {tasks.map((task) => {
-                const entriesByDate = groupScheduleEntriesByDate(
-                  getTaskScheduleEntries(task, peopleById, nonWorkingDates)
-                );
-                const rowHeight = getTaskDateMatrixRowHeight(entriesByDate);
+                const taskBar = getTaskDateBar(task, peopleById, nonWorkingDates, dateIndexByDate);
+                const taskSummary = formatTaskAssignmentsSummary(task, peopleById);
+                const rowHeight = getTaskDateRowHeight(task.title, taskSummary);
 
                 return (
-                  <div key={task.id} className="flex" style={{ minHeight: rowHeight }}>
+                  <div
+                    key={task.id}
+                    className="flex"
+                    style={{ minHeight: rowHeight }}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      const draggedTaskId = event.dataTransfer.getData('text/plain');
+                      if (draggedTaskId && draggedTaskId !== task.id) {
+                        onTaskReorder(draggedTaskId, task.id);
+                      }
+                    }}
+                  >
                     <div
                       className="shrink-0 border-r border-cyan-100 bg-slate-50 px-3 py-2"
                       style={{ width: LANE_WIDTH, minHeight: rowHeight }}
                     >
-                      <div className="truncate text-sm font-semibold text-slate-900">
+                      <button
+                        type="button"
+                        draggable
+                        onDragStart={(event) => {
+                          event.dataTransfer.setData('text/plain', task.id);
+                          event.dataTransfer.effectAllowed = 'move';
+                        }}
+                        className="mb-2 inline-flex items-center gap-1 rounded-md border border-cyan-200 bg-white px-2 py-1 text-[11px] font-semibold text-cyan-800 transition hover:bg-cyan-50"
+                        title="Drag to reorder task rows"
+                      >
+                        <GripHorizontal className="h-3.5 w-3.5" />
+                        Move row
+                      </button>
+                      <div className="whitespace-normal break-words text-sm font-semibold leading-5 text-slate-900">
                         {task.title}
                       </div>
-                      <div className="mt-0.5 truncate text-xs text-slate-500">
-                        {formatTaskAssignmentsSummary(task, peopleById)}
+                      <div className="mt-1 inline-flex max-w-full rounded-md border border-cyan-100 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-cyan-800">
+                        <span className="break-all">{getTaskBoardLabel(task)}</span>
+                      </div>
+                      <div className="mt-1 whitespace-normal break-words text-xs leading-4 text-slate-500">
+                        {taskSummary}
                       </div>
                     </div>
-                    <div
-                      className="grid shrink-0"
-                      style={{
-                        width: timelineWidth,
-                        gridTemplateColumns: `repeat(${dates.length}, ${MATRIX_DAY_WIDTH}px)`,
-                      }}
-                    >
-                      {dates.map((date) => {
-                        const entries = entriesByDate.get(date) ?? [];
-                        return (
+                    <div className="relative shrink-0" style={{ width: timelineWidth, minHeight: rowHeight }}>
+                      <div
+                        className="absolute inset-0 grid"
+                        style={{ gridTemplateColumns: `repeat(${dates.length}, ${DAY_WIDTH}px)` }}
+                      >
+                        {dates.map((date) => (
                           <div
                             key={date}
-                            className={`flex items-start justify-center border-r border-cyan-100 px-1 py-2 ${
+                            className={`border-r border-cyan-100 ${
                               isPlanWorkingDay(date, nonWorkingDates)
                                 ? ''
                                 : nonWorkingDates.includes(date)
                                   ? 'bg-rose-50/90'
                                   : 'bg-amber-50/80'
                             }`}
-                            style={{ minHeight: rowHeight }}
+                          />
+                        ))}
+                      </div>
+
+                      {taskBar && (() => {
+                        const firstPersonId = taskBar.personIds[0];
+                        const color = firstPersonId ? colorsByPersonId[firstPersonId] : undefined;
+                        const warning = task.assignments
+                          .map((assignment) => getAssignmentTimingWarning(task, assignment))
+                          .find(Boolean);
+                        return (
+                          <div
+                            key={`${task.id}-task-date-bar`}
+                            onPointerDown={(event) =>
+                              onTaskPointerDown(
+                                event,
+                                UNASSIGNED_LANE_ID,
+                                task,
+                                ALL_TASK_ASSIGNMENTS_ID,
+                                'move'
+                              )
+                            }
+                            className={`absolute flex cursor-grab items-center overflow-hidden rounded-md border text-xs font-semibold shadow-sm active:cursor-grabbing ${
+                              warning ? 'ring-2 ring-amber-400' : ''
+                            }`}
+                            style={{
+                              left: taskBar.left,
+                              top: 18,
+                              width: taskBar.width,
+                              height: 34,
+                              backgroundColor: color?.fill ?? '#fef3c7',
+                              borderColor: color?.border ?? '#f59e0b',
+                              color: color?.text ?? '#78350f',
+                            }}
+                            title={`${taskBar.peopleLabel}, ${taskBar.hours}h, ${getTaskBoardLabel(task)}, ${taskBar.startDate} - ${taskBar.endDate}${warning ? `. ${warning}` : ''}`}
                           >
-                            {entries.length > 0 && (
-                              <div className="flex w-full flex-col items-center gap-1">
-                                {entries.map((entry) => {
-                                  const color = entry.personId
-                                    ? colorsByPersonId[entry.personId]
-                                    : undefined;
-                                  const assignment = task.assignments.find(
-                                    (candidate) => candidate.id === entry.assignmentId
-                                  );
-                                  const warning = assignment
-                                    ? getAssignmentTimingWarning(task, assignment)
-                                    : null;
-                                  return (
-                                    <div
-                                      key={`${entry.assignmentId}-${entry.personId ?? 'unassigned'}`}
-                                      className={`flex min-h-6 w-full max-w-[104px] items-center justify-center rounded-md border px-2 py-1 text-center text-[9px] font-bold leading-4 ${
-                                        warning ? 'ring-2 ring-amber-400' : ''
-                                      }`}
-                                      style={{
-                                        backgroundColor: color?.fill ?? '#fef3c7',
-                                        borderColor: color?.border ?? '#f59e0b',
-                                        color: color?.text ?? '#78350f',
-                                      }}
-                                      title={`${task.title}: ${entry.personName}, ${getRoleLabel(entry.role)}, ${entry.hours}h on ${date}${warning ? `. ${warning}` : ''}`}
-                                    >
-                                      <span className="block min-w-0 break-words">
-                                        {entry.personId ? formatMatrixPersonLabel(entry.personName) : '?'}
-                                      </span>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
+                            <GripHorizontal className="ml-1 mr-1 h-3.5 w-3.5 shrink-0 opacity-60" />
+                            <div className="min-w-0 flex-1 truncate px-1">
+                              <span className="font-bold">{taskBar.peopleLabel}</span>
+                              <span className="ml-1 opacity-80">{taskBar.hours}h</span>
+                              <span className="ml-1 opacity-70">{getTaskBoardLabel(task)}</span>
+                            </div>
                           </div>
                         );
-                      })}
+                      })()}
                     </div>
                   </div>
                 );
@@ -1115,6 +1605,56 @@ function TaskDateMatrix({
         </div>
       )}
     </section>
+  );
+}
+
+function getTaskDateBar(
+  task: GanttBuilderTask,
+  peopleById: Map<string, GanttBuilderPerson>,
+  nonWorkingDates: string[],
+  dateIndexByDate: Map<string, number>
+) {
+  const entries = getTaskScheduleEntries(task, peopleById, nonWorkingDates);
+  if (entries.length === 0) return null;
+
+  const scheduledDates = Array.from(new Set(entries.map((entry) => entry.date))).sort();
+  const startDate = scheduledDates[0];
+  const endDate = scheduledDates[scheduledDates.length - 1];
+  const startIndex = dateIndexByDate.get(startDate) ?? 0;
+  const endIndex = dateIndexByDate.get(endDate) ?? startIndex;
+  const peopleNames = Array.from(new Set(entries.map((entry) => entry.personName))).sort();
+  const personIds = Array.from(
+    new Set(entries.map((entry) => entry.personId).filter((id): id is string => Boolean(id)))
+  );
+
+  return {
+    startDate,
+    endDate,
+    left: startIndex * DAY_WIDTH + 4,
+    width: Math.max(DAY_WIDTH - 8, (endIndex - startIndex + 1) * DAY_WIDTH - 8),
+    hours: roundHours(entries.reduce((sum, entry) => sum + entry.hours, 0)),
+    personIds,
+    peopleLabel:
+      peopleNames.length <= 2
+        ? peopleNames.join(', ')
+        : `${peopleNames.slice(0, 2).join(', ')} +${peopleNames.length - 2}`,
+  };
+}
+
+function getTaskDateRowHeight(title: string, summary: string) {
+  const titleLines = Math.ceil(Math.max(1, title.length) / 30);
+  const summaryLines = Math.ceil(Math.max(1, summary.length) / 42);
+  return Math.max(86, 40 + titleLines * 20 + summaryLines * 16);
+}
+
+function getTaskEarliestStartDate(task: GanttBuilderTask) {
+  return (
+    task.assignments
+      .flatMap((assignment) => [
+        assignment.startDate,
+        ...Object.values(assignment.personStartDates ?? {}),
+      ])
+      .sort()[0] ?? task.startDate
   );
 }
 
@@ -1321,17 +1861,6 @@ function buildPersonWorkloads(
   ) as Record<string, PersonWorkloadItem[]>;
 }
 
-function getTaskDateMatrixRowHeight(
-  entriesByDate: Map<string, ReturnType<typeof getTaskScheduleEntries>>
-) {
-  const maxEntries = Math.max(
-    0,
-    ...Array.from(entriesByDate.values()).map((entries) => entries.length)
-  );
-
-  return Math.max(70, 18 + maxEntries * 28);
-}
-
 function buildScheduledDateRanges(dates: string[]): DateRange[] {
   const sortedDates = Array.from(new Set(dates)).sort();
   if (sortedDates.length === 0) return [];
@@ -1534,6 +2063,44 @@ function TaskEditor({
           Delete
         </button>
       </div>
+
+      {task.source === 'gitlab' && (
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
+          {task.issueWebUrl ? (
+            <a
+              href={task.issueWebUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-semibold text-sky-700 hover:text-sky-900"
+            >
+              {task.issueProjectPath}#{task.issueIid}
+            </a>
+          ) : (
+            <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-semibold">
+              {task.issueProjectPath}#{task.issueIid}
+            </span>
+          )}
+          <span className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1 font-semibold text-sky-800">
+            board: {getTaskBoardLabel(task)}
+          </span>
+          <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1">
+            GitLab: {task.gitlabState ?? 'unknown'}
+          </span>
+          {task.gitlabMilestoneTitle && (
+            <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1">
+              {task.gitlabMilestoneTitle}
+            </span>
+          )}
+          {task.gitlabDueDate && (
+            <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1">
+              due {formatShortDate(task.gitlabDueDate)}
+            </span>
+          )}
+          <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1">
+            spent {task.gitlabSpentHours ?? 0}h / estimate {task.gitlabTimeEstimateHours ?? 0}h
+          </span>
+        </div>
+      )}
 
       <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
         <div className="hidden grid-cols-[150px_96px_150px_minmax(220px,1fr)_72px] gap-3 border-b border-slate-200 bg-slate-100 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 lg:grid">
@@ -1912,6 +2479,34 @@ function updatePlanTask(
   };
 }
 
+function reorderPlanTasks(
+  plan: GanttBuilderPlan,
+  draggedTaskId: string,
+  targetTaskId: string
+): GanttBuilderPlan {
+  if (draggedTaskId === targetTaskId) return plan;
+
+  const orderedTasks = [...plan.tasks].sort(sortTasksByPlanOrder);
+  const fromIndex = orderedTasks.findIndex((task) => task.id === draggedTaskId);
+  const toIndex = orderedTasks.findIndex((task) => task.id === targetTaskId);
+  if (fromIndex < 0 || toIndex < 0) return plan;
+
+  const [draggedTask] = orderedTasks.splice(fromIndex, 1);
+  orderedTasks.splice(toIndex, 0, draggedTask);
+  const orderByTaskId = new Map(
+    orderedTasks.map((task, index) => [task.id, index + 1])
+  );
+
+  return {
+    ...plan,
+    tasks: plan.tasks.map((task) => ({
+      ...task,
+      order: orderByTaskId.get(task.id) ?? task.order,
+    })),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function updateTaskAssignment(
   plan: GanttBuilderPlan,
   taskId: string,
@@ -2150,6 +2745,50 @@ function updateTaskLaneAssignee(
   };
 }
 
+function updateTaskAllAssignmentStartDates(
+  plan: GanttBuilderPlan,
+  taskId: string,
+  nextTaskStartDate: string
+): GanttBuilderPlan {
+  const task = plan.tasks.find((candidate) => candidate.id === taskId);
+  if (!task) return plan;
+
+  const earliestStartDate = task.assignments
+    .flatMap((assignment) => [
+      assignment.startDate,
+      ...Object.values(assignment.personStartDates ?? {}),
+    ])
+    .sort()[0];
+  if (!earliestStartDate) return plan;
+
+  const deltaDays = daysBetween(earliestStartDate, nextTaskStartDate);
+
+  return {
+    ...plan,
+    tasks: plan.tasks.map((candidate) => {
+      if (candidate.id !== taskId) return candidate;
+
+      return {
+        ...candidate,
+        startDate: nextWorkingDate(addDays(candidate.startDate, deltaDays), plan.nonWorkingDates),
+        assignments: candidate.assignments.map((assignment) => ({
+          ...assignment,
+          startDate: nextWorkingDate(addDays(assignment.startDate, deltaDays), plan.nonWorkingDates),
+          personStartDates: assignment.personStartDates
+            ? Object.fromEntries(
+                Object.entries(assignment.personStartDates).map(([personId, startDate]) => [
+                  personId,
+                  nextWorkingDate(addDays(startDate, deltaDays), plan.nonWorkingDates),
+                ])
+              )
+            : undefined,
+        })),
+      };
+    }),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function updatePlanPerson(
   plan: GanttBuilderPlan,
   personId: string,
@@ -2284,18 +2923,139 @@ function taskMatchesFilters(
   return task.assignments.some((assignment) => assignment.role === roleFilter);
 }
 
-function taskHasLaneWork(task: GanttBuilderTask, personId: string | null) {
-  return getTaskLaneHours(task, personId) > 0;
+function sortTasksByPlanOrder(left: GanttBuilderTask, right: GanttBuilderTask) {
+  return (
+    (left.order ?? Number.MAX_SAFE_INTEGER) - (right.order ?? Number.MAX_SAFE_INTEGER) ||
+    left.title.localeCompare(right.title)
+  );
 }
 
-function groupScheduleEntriesByDate(entries: ReturnType<typeof getTaskScheduleEntries>) {
-  const byDate = new Map<string, typeof entries>();
-  for (const entry of entries) {
-    const dateEntries = byDate.get(entry.date) ?? [];
-    dateEntries.push(entry);
-    byDate.set(entry.date, dateEntries);
+interface PlanWarning {
+  id: string;
+  message: string;
+}
+
+function buildPlanWarnings(plan: GanttBuilderPlan, context: ReturnType<typeof createGanttBuilderContext>): PlanWarning[] {
+  const warnings: PlanWarning[] = [];
+  const today = new Date().toISOString().slice(0, 10);
+  const peopleById = new Map(plan.people.map((person) => [person.id, person]));
+
+  for (const task of plan.tasks) {
+    if (task.source !== 'gitlab') continue;
+
+    const taskEndDate = getTaskEndDate(task, plan.people, plan.nonWorkingDates);
+    const plannedAssignees = new Set(task.assignments.flatMap((assignment) => assignment.assigneeIds));
+    const gitlabAssignees = new Set(task.gitlabAssigneeIds ?? []);
+    const taskRef = `${task.issueProjectPath ?? 'GitLab'}#${task.issueIid ?? task.id}`;
+
+    if (task.gitlabState === 'closed' && taskEndDate > today) {
+      warnings.push({
+        id: `${task.id}:closed-future`,
+        message: `${taskRef} is closed in GitLab but planned into the future.`,
+      });
+    }
+
+    if (task.gitlabState !== 'closed' && taskEndDate < today) {
+      warnings.push({
+        id: `${task.id}:open-past`,
+        message: `${taskRef} is still open in GitLab but the local plan ends before today.`,
+      });
+    }
+
+    if (!setsEqual(plannedAssignees, gitlabAssignees)) {
+      const plannedNames = Array.from(plannedAssignees)
+        .map((personId) => peopleById.get(personId)?.name)
+        .filter(Boolean)
+        .join(', ') || 'unassigned';
+      const gitlabNames = task.gitlabAssigneeNames?.join(', ') || 'unassigned';
+      warnings.push({
+        id: `${task.id}:assignees`,
+        message: `${taskRef} local assignees (${plannedNames}) differ from GitLab (${gitlabNames}).`,
+      });
+    }
+
+    if (task.gitlabTimeEstimateHours === 0) {
+      warnings.push({
+        id: `${task.id}:no-estimate`,
+        message: `${taskRef} has no GitLab time estimate.`,
+      });
+    }
+
+    if (
+      task.gitlabTimeEstimateHours !== undefined &&
+      task.gitlabSpentHours !== undefined &&
+      task.gitlabTimeEstimateHours > 0 &&
+      task.gitlabSpentHours > task.gitlabTimeEstimateHours
+    ) {
+      warnings.push({
+        id: `${task.id}:spent-over-estimate`,
+        message: `${taskRef} spent time is already above GitLab estimate.`,
+      });
+    }
+
+    if (task.startDate < context.period.start || taskEndDate > context.period.end) {
+      warnings.push({
+        id: `${task.id}:outside-period`,
+        message: `${taskRef} is planned outside the selected Gantt period.`,
+      });
+    }
   }
-  return byDate;
+
+  return warnings;
+}
+
+function countChangedTasks(savedPlanJson: string, plan: GanttBuilderPlan) {
+  try {
+    const saved = JSON.parse(savedPlanJson) as Partial<GanttBuilderPlan>;
+    const savedTasksById = new Map((saved.tasks ?? []).map((task) => [task.id, JSON.stringify(task)]));
+    return plan.tasks.filter((task) => savedTasksById.get(task.id) !== JSON.stringify(task)).length;
+  } catch {
+    return plan.tasks.length;
+  }
+}
+
+function dedupeGitLabIssues(issues: GitLabGanttIssue[]) {
+  const byKey = new Map<string, GitLabGanttIssue>();
+  for (const issue of issues) {
+    byKey.set(`${issue.projectPath}#${issue.iid}`, issue);
+  }
+  return Array.from(byKey.values()).sort(
+    (left, right) =>
+      left.projectPath.localeCompare(right.projectPath) || Number(left.iid) - Number(right.iid)
+  );
+}
+
+function dedupeMilestones(milestones: GitLabGanttMilestone[]) {
+  const byTitle = new Map<string, GitLabGanttMilestone>();
+  for (const milestone of milestones) {
+    const existing = byTitle.get(milestone.title);
+    if (!existing || (!existing.startDate && milestone.startDate)) {
+      byTitle.set(milestone.title, milestone);
+    }
+  }
+  return Array.from(byTitle.values()).sort((left, right) => left.title.localeCompare(right.title));
+}
+
+function getUpdatedAfterIso(windowDays: number) {
+  const safeDays = Number.isFinite(windowDays) && windowDays > 0 ? windowDays : 45;
+  return new Date(Date.now() - safeDays * 86400000).toISOString();
+}
+
+function getStrategyLabel(strategy: GitLabGanttIssueStrategy) {
+  if (strategy === 'milestone') return 'Milestone only';
+  return 'Opened + recently closed';
+}
+
+function setsEqual(left: Set<string>, right: Set<string>) {
+  if (left.size !== right.size) return false;
+  for (const value of left) {
+    if (!right.has(value)) return false;
+  }
+  return true;
+}
+
+function taskHasLaneWork(task: GanttBuilderTask, personId: string | null) {
+  return getTaskLaneHours(task, personId) > 0;
 }
 
 function formatTaskAssignmentsSummary(
@@ -2323,6 +3083,10 @@ function formatTaskAssignmentsSummary(
   });
 
   return parts.join(' | ');
+}
+
+function getTaskBoardLabel(task: GanttBuilderTask) {
+  return task.issueProjectPath ?? 'local/manual';
 }
 
 function formatAssignmentPeopleSummary(
@@ -2449,6 +3213,11 @@ function daysBetween(startDate: string, endDate: string) {
   return Math.round((end - start) / 86400000);
 }
 
+function addDays(date: string, days: number) {
+  const timestamp = new Date(`${date}T00:00:00Z`).getTime();
+  return new Date(timestamp + days * 86400000).toISOString().slice(0, 10);
+}
+
 function buildPersonColor(index: number): PersonColor {
   const hue = (index * 47) % 360;
   return {
@@ -2459,8 +3228,3 @@ function buildPersonColor(index: number): PersonColor {
   };
 }
 
-function formatMatrixPersonLabel(name: string) {
-  const trimmed = name.trim();
-  if (!trimmed) return '?';
-  return trimmed;
-}

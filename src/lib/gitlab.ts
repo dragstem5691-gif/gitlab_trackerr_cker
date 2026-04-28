@@ -20,6 +20,66 @@ type TimelogNode = {
   user?: TimelogUserNode | null;
 };
 
+export interface GitLabGanttMilestone {
+  id: string;
+  iid: string;
+  title: string;
+  startDate: string | null;
+  dueDate: string | null;
+  state: string;
+}
+
+export interface GitLabGanttIssue extends RawIssue {
+  sourceScopePath: string;
+}
+
+export type GitLabGanttIssueStrategy = 'milestone' | 'active';
+
+export interface GitLabGanttIssueFetchParams {
+  strategy?: GitLabGanttIssueStrategy;
+  milestoneTitle?: string | null;
+  updatedAfter?: string | null;
+}
+
+interface RestMilestone {
+  id: number;
+  iid: number;
+  title: string;
+  start_date: string | null;
+  due_date: string | null;
+  state: string;
+}
+
+interface RestProject {
+  id: number;
+  name: string;
+  path_with_namespace: string;
+}
+
+interface RestIssue {
+  id: number;
+  iid: number;
+  title: string;
+  web_url: string;
+  project_id: number;
+  state: string;
+  closed_at: string | null;
+  due_date: string | null;
+  updated_at: string;
+  labels: string[];
+  assignees: {
+    id: number;
+    name: string;
+    username: string;
+    avatar_url?: string | null;
+  }[];
+  milestone: RestMilestone | null;
+  time_stats?: {
+    time_estimate?: number;
+    total_time_spent?: number;
+  };
+}
+
 interface IssueStub {
   id: string;
   iid: string;
@@ -236,12 +296,98 @@ export class GitLabClient {
       headers: { Authorization: `Bearer ${this.token}` },
     });
     if (!res.ok) {
-      throw new Error(`GitLab REST ${res.status}: ${res.statusText} for ${path}`);
+      const error = new Error(`GitLab REST ${res.status}: ${res.statusText} for ${path}`);
+      (error as Error & { status?: number }).status = res.status;
+      throw error;
     }
     return {
       data: (await res.json()) as T,
       nextPage: res.headers.get('x-next-page'),
     };
+  }
+
+  async fetchGanttMilestones(scopePath: string, logger?: BuildLogger): Promise<GitLabGanttMilestone[]> {
+    logger?.phase(`Loading GitLab milestones from ${scopePath}`);
+    const projectMilestones = await this.tryFetchAllRestPages<RestMilestone>(
+      `/projects/${encodeURIComponent(scopePath)}/milestones?state=all&per_page=100`,
+      logger
+    );
+    if (projectMilestones) return projectMilestones.map(toGanttMilestone);
+
+    const groupMilestones = await this.tryFetchAllRestPages<RestMilestone>(
+      `/groups/${encodeURIComponent(scopePath)}/milestones?state=all&per_page=100`,
+      logger
+    );
+    if (groupMilestones) return groupMilestones.map(toGanttMilestone);
+
+    logger?.warn(`Milestones are not available for ${scopePath}`);
+    return [];
+  }
+
+  async fetchGanttIssuesFromScope(
+    scopePath: string,
+    params: GitLabGanttIssueFetchParams = {},
+    logger?: BuildLogger
+  ): Promise<GitLabGanttIssue[]> {
+    if ((params.strategy ?? 'active') === 'milestone' && !params.milestoneTitle) {
+      return [];
+    }
+
+    logger?.phase(`Loading GitLab issues from main scope ${scopePath}`, {
+      strategy: params.strategy ?? 'active',
+      milestone: params.milestoneTitle ?? 'any',
+      updatedAfter: params.updatedAfter ?? 'none',
+    });
+
+    const projectIssues = await this.tryFetchProjectGanttIssues(
+      scopePath,
+      scopePath,
+      params,
+      logger
+    );
+    if (projectIssues) return projectIssues;
+
+    const projects = await this.tryFetchAllRestPages<RestProject>(
+      `/groups/${encodeURIComponent(scopePath)}/projects?include_subgroups=true&simple=true&per_page=100`,
+      logger
+    );
+    if (!projects) {
+      logger?.warn(`Main scope ${scopePath} is not accessible as a project or group`);
+      return [];
+    }
+
+    const issueBatches = await mapWithConcurrency(projects, 4, async (project) => {
+      const issues = await this.fetchProjectGanttIssuesByEncodedId(
+        String(project.id),
+        project.path_with_namespace,
+        project.name,
+        scopePath,
+        params,
+        logger
+      );
+      return issues;
+    });
+
+    return issueBatches.flat();
+  }
+
+  async fetchGanttIssuesFromProject(
+    projectPath: string,
+    params: GitLabGanttIssueFetchParams = {},
+    logger?: BuildLogger
+  ): Promise<GitLabGanttIssue[]> {
+    if ((params.strategy ?? 'active') === 'milestone' && !params.milestoneTitle) {
+      return [];
+    }
+
+    return (
+      (await this.tryFetchProjectGanttIssues(
+        projectPath,
+        projectPath,
+        params,
+        logger
+      )) ?? []
+    );
   }
 
   async fetchProjectIssueStubs(projectPath: string, logger?: BuildLogger): Promise<IssueStub[]> {
@@ -609,6 +755,173 @@ export class GitLabClient {
       spentAt: t.spentAt,
     };
   }
+
+  private async tryFetchProjectGanttIssues(
+    projectPath: string,
+    sourceScopePath: string,
+    params: GitLabGanttIssueFetchParams,
+    logger?: BuildLogger
+  ): Promise<GitLabGanttIssue[] | null> {
+    try {
+      const projectData = await this.restPage<{ id: number; name: string; path_with_namespace: string }>(
+        `/projects/${encodeURIComponent(projectPath)}`
+      );
+      return this.fetchProjectGanttIssuesByEncodedId(
+        encodeURIComponent(projectPath),
+        projectData.data.path_with_namespace,
+        projectData.data.name,
+        sourceScopePath,
+        params,
+        logger
+      );
+    } catch (error) {
+      const status = (error as Error & { status?: number }).status;
+      if (status === 404 || status === 403) return null;
+      throw error;
+    }
+  }
+
+  private async fetchProjectGanttIssuesByEncodedId(
+    encodedProjectId: string,
+    projectPath: string,
+    projectName: string,
+    sourceScopePath: string,
+    fetchParams: GitLabGanttIssueFetchParams,
+    logger?: BuildLogger
+  ): Promise<GitLabGanttIssue[]> {
+    const strategy = fetchParams.strategy ?? 'active';
+    const baseParams = new URLSearchParams({
+      scope: 'all',
+      per_page: '100',
+      order_by: 'updated_at',
+      sort: 'desc',
+    });
+
+    if (strategy === 'milestone') {
+      if (!fetchParams.milestoneTitle) return [];
+      baseParams.set('state', 'all');
+      baseParams.set('milestone', fetchParams.milestoneTitle);
+
+      const issues = await this.fetchAllRestPages<RestIssue>(
+        `/projects/${encodedProjectId}/issues?${baseParams.toString()}`,
+        logger
+      );
+
+      logger?.success(`${projectPath}: loaded ${issues.length} milestone issue(s) for Gantt`);
+      return issues.map((issue) => toGanttIssue(issue, projectPath, projectName, sourceScopePath));
+    }
+
+    const openedParams = new URLSearchParams(baseParams);
+    openedParams.set('state', 'opened');
+    const closedParams = new URLSearchParams(baseParams);
+    closedParams.set('state', 'closed');
+    if (fetchParams.updatedAfter) {
+      closedParams.set('updated_after', fetchParams.updatedAfter);
+    }
+
+    const [openedIssues, recentlyClosedIssues] = await Promise.all([
+      this.fetchAllRestPages<RestIssue>(
+        `/projects/${encodedProjectId}/issues?${openedParams.toString()}`,
+        logger
+      ),
+      this.fetchAllRestPages<RestIssue>(
+        `/projects/${encodedProjectId}/issues?${closedParams.toString()}`,
+        logger
+      ),
+    ]);
+
+    const issues = dedupeRestIssues([...openedIssues, ...recentlyClosedIssues]);
+    logger?.success(
+      `${projectPath}: loaded ${issues.length} active issue(s) for Gantt (${openedIssues.length} opened, ${recentlyClosedIssues.length} recently closed)`
+    );
+    return issues.map((issue) => toGanttIssue(issue, projectPath, projectName, sourceScopePath));
+  }
+
+  private async tryFetchAllRestPages<T>(
+    firstPath: string,
+    logger?: BuildLogger
+  ): Promise<T[] | null> {
+    try {
+      return await this.fetchAllRestPages<T>(firstPath, logger);
+    } catch (error) {
+      const status = (error as Error & { status?: number }).status;
+      if (status === 404 || status === 403) return null;
+      throw error;
+    }
+  }
+
+  private async fetchAllRestPages<T>(firstPath: string, logger?: BuildLogger): Promise<T[]> {
+    const items: T[] = [];
+    let path = firstPath;
+    let page = 1;
+
+    while (true) {
+      const separator = path.includes('?') ? '&' : '?';
+      const pagePath = `${path}${separator}page=${page}`;
+      logger?.info(`REST: fetching ${pagePath}`);
+      const { data, nextPage } = await this.restPage<T[]>(pagePath);
+      items.push(...data);
+      if (!nextPage) break;
+      page = Number(nextPage);
+      if (!Number.isFinite(page) || page <= 0) break;
+      path = firstPath;
+    }
+
+    return items;
+  }
+}
+
+function toGanttMilestone(milestone: RestMilestone): GitLabGanttMilestone {
+  return {
+    id: String(milestone.id),
+    iid: String(milestone.iid),
+    title: milestone.title,
+    startDate: milestone.start_date,
+    dueDate: milestone.due_date,
+    state: milestone.state,
+  };
+}
+
+function dedupeRestIssues(issues: RestIssue[]) {
+  const byProjectIssue = new Map<string, RestIssue>();
+  for (const issue of issues) {
+    byProjectIssue.set(`${issue.project_id}#${issue.iid}`, issue);
+  }
+  return Array.from(byProjectIssue.values());
+}
+
+function toGanttIssue(
+  issue: RestIssue,
+  projectPath: string,
+  projectName: string,
+  sourceScopePath: string
+): GitLabGanttIssue {
+  return {
+    id: String(issue.id),
+    iid: String(issue.iid),
+    title: issue.title,
+    webUrl: issue.web_url,
+    projectId: String(issue.project_id),
+    projectName,
+    projectPath,
+    totalTimeSpentSeconds: issue.time_stats?.total_time_spent ?? 0,
+    timeEstimateSeconds: issue.time_stats?.time_estimate ?? 0,
+    timelogs: [],
+    linkedIssueIds: [],
+    state: issue.state,
+    closedAt: issue.closed_at,
+    dueDate: issue.due_date,
+    updatedAt: issue.updated_at,
+    labels: issue.labels,
+    milestone: issue.milestone ? toGanttMilestone(issue.milestone) : null,
+    assignees: issue.assignees.map((assignee) => ({
+      id: String(assignee.id),
+      name: assignee.name,
+      username: assignee.username,
+      avatarUrl: assignee.avatar_url ?? undefined,
+    })),
+    sourceScopePath,
+  };
 }
 
 export async function loadReportData(

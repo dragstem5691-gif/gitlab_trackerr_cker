@@ -53,9 +53,9 @@ export function FilterForm({ initialValues, isLoading, onSubmit, onDemo, error }
 
       <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-5">
         <Field
-          label="GitLab instance URL"
+          label="Main project/group URL"
           icon={<Server className="w-4 h-4" />}
-          hint="Link to the root GitLab project that contains all boards: PM, backend, frontend, and others, e.g. https://gitlab.example.com/crypto_payments/bps/"
+          hint="Link to the main GitLab project or group that contains all boards: PM, backend, frontend, and others, e.g. https://gitlab.example.com/crypto_payments/bps/"
         >
           <input
             type="text"

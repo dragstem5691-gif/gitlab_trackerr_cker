@@ -1,7 +1,9 @@
 import type { ReportResult } from '../types';
+import type { GitLabGanttIssue } from './gitlab';
 import { PROJECT_ROLE_OPTIONS, type ProjectRole } from './planning';
 
 export type GanttBuilderPersonSource = 'gitlab' | 'manual';
+export type GanttBuilderTaskSource = 'manual' | 'gitlab';
 
 export interface GanttBuilderPerson {
   id: string;
@@ -26,6 +28,22 @@ export interface GanttBuilderTask {
   title: string;
   startDate: string;
   assignments: GanttBuilderTaskAssignment[];
+  order?: number;
+  source?: GanttBuilderTaskSource;
+  issueId?: string;
+  issueIid?: string;
+  issueWebUrl?: string;
+  issueProjectPath?: string;
+  gitlabState?: string;
+  gitlabClosedAt?: string | null;
+  gitlabDueDate?: string | null;
+  gitlabUpdatedAt?: string;
+  gitlabLabels?: string[];
+  gitlabMilestoneTitle?: string | null;
+  gitlabAssigneeIds?: string[];
+  gitlabAssigneeNames?: string[];
+  gitlabTimeEstimateHours?: number;
+  gitlabSpentHours?: number;
 }
 
 export interface GanttBuilderPlan {
@@ -112,6 +130,42 @@ export function createInitialGanttBuilderPlan(context: GanttBuilderContext): Gan
     tasks: [],
     nonWorkingDates: [],
     updatedAt: new Date().toISOString(),
+  };
+}
+
+export function createGitLabGanttBuilderPlan(
+  context: GanttBuilderContext,
+  issues: GitLabGanttIssue[],
+  previous?: GanttBuilderPlan | null
+): GanttBuilderPlan {
+  const gitlabPeople = buildPeopleFromGitLabIssues(issues);
+  const previousPeople = previous?.people ?? [];
+  const peopleById = new Map<string, GanttBuilderPerson>();
+
+  for (const person of [...context.people, ...gitlabPeople, ...previousPeople]) {
+    peopleById.set(person.id, {
+      ...person,
+      weeklyCapacityHours: normalizeCapacityHours(person.weeklyCapacityHours),
+    });
+  }
+
+  const people = Array.from(peopleById.values()).sort(sortPeople);
+  const previousTasksById = new Map((previous?.tasks ?? []).map((task) => [task.id, task]));
+  const nonWorkingDates = previous?.nonWorkingDates ?? [];
+  const validPersonIds = new Set(people.map((person) => person.id));
+
+  const tasks = issues
+    .map((issue) =>
+      createGitLabTask(issue, context, nonWorkingDates, previousTasksById.get(getGitLabTaskId(issue)))
+    )
+    .map((task) => normalizeStoredTask(task, context, validPersonIds, nonWorkingDates))
+    .filter((task): task is GanttBuilderTask => Boolean(task));
+
+  return {
+    people,
+    tasks,
+    nonWorkingDates,
+    updatedAt: previous?.updatedAt ?? new Date().toISOString(),
   };
 }
 
@@ -216,6 +270,55 @@ export function createTask(params: {
         startDate: params.startDate,
         assigneeIds: params.assigneeIds ?? [],
       }),
+    ],
+  };
+}
+
+function createGitLabTask(
+  issue: GitLabGanttIssue,
+  context: GanttBuilderContext,
+  nonWorkingDates: string[],
+  previous?: GanttBuilderTask
+): GanttBuilderTask {
+  const gitlabAssigneeIds = (issue.assignees ?? []).map((assignee) => assignee.id);
+  const estimateHours = normalizeEstimateHours(
+    previous ? getTaskTotalEstimateHours(previous) : (issue.timeEstimateSeconds ?? 0) / 3600
+  );
+  const startDate =
+    previous?.startDate ??
+    inferGitLabTaskStartDate(issue, context.period.start, estimateHours, nonWorkingDates);
+  const previousAssignment = previous?.assignments[0];
+
+  return {
+    id: getGitLabTaskId(issue),
+    title: issue.title,
+    startDate,
+    order: previous?.order,
+    source: 'gitlab',
+    issueId: issue.id,
+    issueIid: issue.iid,
+    issueWebUrl: issue.webUrl,
+    issueProjectPath: issue.projectPath,
+    gitlabState: issue.state,
+    gitlabClosedAt: issue.closedAt,
+    gitlabDueDate: issue.dueDate,
+    gitlabUpdatedAt: issue.updatedAt,
+    gitlabLabels: issue.labels,
+    gitlabMilestoneTitle: issue.milestone?.title ?? null,
+    gitlabAssigneeIds,
+    gitlabAssigneeNames: (issue.assignees ?? []).map((assignee) => assignee.name),
+    gitlabTimeEstimateHours: roundHours((issue.timeEstimateSeconds ?? 0) / 3600),
+    gitlabSpentHours: roundHours((issue.totalTimeSpentSeconds ?? 0) / 3600),
+    assignments: [
+      createTaskAssignment({
+        role: previousAssignment?.role ?? null,
+        estimateHours: previousAssignment?.estimateHours ?? estimateHours,
+        startDate: previousAssignment?.startDate ?? startDate,
+        assigneeIds: previousAssignment?.assigneeIds ?? gitlabAssigneeIds,
+        personEstimates: previousAssignment?.personEstimates,
+        personStartDates: previousAssignment?.personStartDates,
+      }),
+      ...(previous?.assignments.slice(1) ?? []),
     ],
   };
 }
@@ -589,6 +692,98 @@ function buildPeopleFromReport(report: ReportResult): GanttBuilderPerson[] {
     .sort(sortPeople);
 }
 
+function buildPeopleFromGitLabIssues(issues: GitLabGanttIssue[]): GanttBuilderPerson[] {
+  const people = new Map<string, GanttBuilderPerson>();
+
+  for (const issue of issues) {
+    for (const assignee of issue.assignees ?? []) {
+      people.set(assignee.id, {
+        id: assignee.id,
+        name: assignee.name,
+        role: null,
+        source: 'gitlab',
+        weeklyCapacityHours: DEFAULT_WEEKLY_CAPACITY_HOURS,
+      });
+    }
+  }
+
+  return Array.from(people.values()).sort(sortPeople);
+}
+
+function getGitLabTaskId(issue: GitLabGanttIssue) {
+  return `gitlab:${issue.projectPath}#${issue.iid}`;
+}
+
+function inferGitLabTaskStartDate(
+  issue: GitLabGanttIssue,
+  fallbackStartDate: string,
+  estimateHours: number,
+  nonWorkingDates: string[]
+) {
+  if (issue.dueDate && normalizeIsoDate(issue.dueDate)) {
+    return subtractWorkingDays(
+      issue.dueDate,
+      getWorkDaysForHours(estimateHours, DEFAULT_DAILY_CAPACITY_HOURS),
+      nonWorkingDates
+    );
+  }
+
+  return nextWorkingDate(fallbackStartDate, nonWorkingDates);
+}
+
+function subtractWorkingDays(date: string, workDays: number, nonWorkingDates: string[] = []) {
+  let cursor = toUtcDay(nextWorkingDate(date, nonWorkingDates));
+  let remaining = Math.max(1, workDays);
+
+  while (true) {
+    const currentDate = fromUtcDay(cursor);
+    if (isPlanWorkingDay(currentDate, nonWorkingDates)) {
+      remaining -= 1;
+      if (remaining === 0) return currentDate;
+    }
+    cursor -= 1;
+  }
+}
+
+function pickStoredTaskMetadata(task: Record<string, unknown>): Partial<GanttBuilderTask> {
+  const metadata: Partial<GanttBuilderTask> = {};
+  const source = task.source;
+  if (source === 'manual' || source === 'gitlab') metadata.source = source;
+  if (typeof task.issueId === 'string') metadata.issueId = task.issueId;
+  if (typeof task.issueIid === 'string') metadata.issueIid = task.issueIid;
+  if (typeof task.issueWebUrl === 'string') metadata.issueWebUrl = task.issueWebUrl;
+  if (typeof task.issueProjectPath === 'string') metadata.issueProjectPath = task.issueProjectPath;
+  if (typeof task.gitlabState === 'string') metadata.gitlabState = task.gitlabState;
+  if (typeof task.gitlabClosedAt === 'string' || task.gitlabClosedAt === null) {
+    metadata.gitlabClosedAt = task.gitlabClosedAt;
+  }
+  if (typeof task.gitlabDueDate === 'string' || task.gitlabDueDate === null) {
+    metadata.gitlabDueDate = task.gitlabDueDate;
+  }
+  if (typeof task.gitlabUpdatedAt === 'string') metadata.gitlabUpdatedAt = task.gitlabUpdatedAt;
+  if (Array.isArray(task.gitlabLabels)) {
+    metadata.gitlabLabels = task.gitlabLabels.filter((label): label is string => typeof label === 'string');
+  }
+  if (typeof task.gitlabMilestoneTitle === 'string' || task.gitlabMilestoneTitle === null) {
+    metadata.gitlabMilestoneTitle = task.gitlabMilestoneTitle;
+  }
+  if (Array.isArray(task.gitlabAssigneeIds)) {
+    metadata.gitlabAssigneeIds = task.gitlabAssigneeIds.filter(
+      (id): id is string => typeof id === 'string'
+    );
+  }
+  if (Array.isArray(task.gitlabAssigneeNames)) {
+    metadata.gitlabAssigneeNames = task.gitlabAssigneeNames.filter(
+      (name): name is string => typeof name === 'string'
+    );
+  }
+  if (typeof task.gitlabTimeEstimateHours === 'number') {
+    metadata.gitlabTimeEstimateHours = task.gitlabTimeEstimateHours;
+  }
+  if (typeof task.gitlabSpentHours === 'number') metadata.gitlabSpentHours = task.gitlabSpentHours;
+  return metadata;
+}
+
 function parseBulkTaskLine(line: string) {
   const estimatePatterns = [
     /^\[(\d+(?:[.,]\d+)?)\s*h(?:ours?)?\]\s*(.+)$/i,
@@ -634,6 +829,7 @@ function normalizeStoredTask(
     assignments?: unknown;
     estimateHours?: unknown;
     assigneeId?: unknown;
+    order?: unknown;
   };
 
   if (typeof task.id !== 'string' || typeof task.title !== 'string') {
@@ -673,6 +869,7 @@ function normalizeStoredTask(
   return {
     id: task.id,
     title: task.title.trim() || 'Untitled task',
+    order: typeof task.order === 'number' ? task.order : undefined,
     startDate: nextWorkingDate(
       typeof task.startDate === 'string' && normalizeIsoDate(task.startDate)
         ? task.startDate
@@ -680,6 +877,7 @@ function normalizeStoredTask(
       nonWorkingDates
     ),
     assignments: assignments.length > 0 ? assignments : [createTaskAssignment()],
+    ...pickStoredTaskMetadata(task as Record<string, unknown>),
   };
 }
 

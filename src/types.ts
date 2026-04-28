@@ -26,6 +26,20 @@ export interface RawIssue {
   totalTimeSpentSeconds: number;
   timelogs: TimeEntry[];
   linkedIssueIds: string[];
+  state?: string;
+  closedAt?: string | null;
+  dueDate?: string | null;
+  timeEstimateSeconds?: number;
+  updatedAt?: string;
+  labels?: string[];
+  milestone?: {
+    id: string;
+    iid?: string;
+    title: string;
+    startDate?: string | null;
+    dueDate?: string | null;
+  } | null;
+  assignees?: GitLabUser[];
 }
 
 export interface UserAggregation {

@@ -112,6 +112,20 @@ function App() {
     });
   };
 
+  const ganttGitLabConfig = useMemo(() => {
+    if (!report || !formSnapshot.token) return null;
+    const instanceOrigin = parseInstanceOrigin(formSnapshot.instanceUrl);
+    const mainScopePath = parseProjectPath(formSnapshot.instanceUrl);
+    if (!instanceOrigin || !mainScopePath) return null;
+
+    return {
+      instanceOrigin,
+      token: formSnapshot.token,
+      mainScopePath,
+      pmProjectPath: report.projectPath,
+    };
+  }, [formSnapshot.instanceUrl, formSnapshot.token, report]);
+
   const handleSubmit = async (values: FilterFormValues) => {
     setFormSnapshot(values);
     setError(null);
@@ -302,6 +316,7 @@ function App() {
         {page === 'ganttBuilder' && (
           <GanttBuilderView
             report={report}
+            gitLabConfig={ganttGitLabConfig}
             onBack={() => setPage('report')}
           />
         )}
