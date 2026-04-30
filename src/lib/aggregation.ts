@@ -155,7 +155,7 @@ export function buildReport(
     `Grand total: ${formatSeconds(grandTotal.secondsInPeriod)} in period, ${formatSeconds(grandTotal.secondsAllTime)} all time`
   );
 
-  const people = computePeople(pmTrees, standalone, grandTotal.secondsInPeriod);
+  const people = computePeople(pmTrees, standalone, grandTotal.secondsInPeriod, startDate, endDate);
   logger?.success(`Aggregated ${people.length} contributors in People view`);
 
   logger?.phase('Aggregation complete', {
@@ -298,7 +298,9 @@ function computeGrandTotal(pmTrees: PmTree[], standalone: IssueNode[]) {
 function computePeople(
   pmTrees: PmTree[],
   standalone: IssueNode[],
-  grandTotalSecondsInPeriod: number
+  grandTotalSecondsInPeriod: number,
+  startDate: string,
+  endDate: string
 ): PersonAggregation[] {
   const peopleMap = new Map<string, PersonAggregation>();
   const seenIssueIds = new Set<string>();
@@ -329,6 +331,18 @@ function computePeople(
 
       if (user.secondsInPeriod > 0) {
         person.issuesTouchedInPeriod += 1;
+        const timelogs = node.issue.timelogs
+          .filter(
+            (entry) =>
+              entry.userId === user.userId && isInPeriod(entry.spentAt, startDate, endDate)
+          )
+          .map((entry) => ({
+            id: entry.id,
+            spentAt: entry.spentAt,
+            seconds: entry.timeSpentSeconds,
+          }))
+          .sort((left, right) => left.spentAt.localeCompare(right.spentAt));
+
         person.issueBreakdown.push({
           issueId: node.issue.id,
           issueIid: node.issue.iid,
@@ -336,6 +350,7 @@ function computePeople(
           issueWebUrl: node.issue.webUrl,
           projectName: node.issue.projectName,
           secondsInPeriod: user.secondsInPeriod,
+          timelogs,
         });
       }
     }

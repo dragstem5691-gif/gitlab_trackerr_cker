@@ -1,5 +1,12 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, ExternalLink, Inbox, Trophy } from 'lucide-react';
+import {
+  CalendarClock,
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  Inbox,
+  Trophy,
+} from 'lucide-react';
 import type { PersonAggregation } from '../types';
 import { formatHours } from '../lib/time';
 
@@ -138,30 +145,79 @@ function PersonRow({
           ) : (
             <ul className="space-y-1.5">
               {person.issueBreakdown.map((breakdown) => (
-                <li
+                <IssueBreakdownRow
                   key={breakdown.issueId}
-                  className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-white border border-slate-100"
+                  breakdown={breakdown}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function IssueBreakdownRow({
+  breakdown,
+}: {
+  breakdown: PersonAggregation['issueBreakdown'][number];
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <li className="rounded-lg bg-white border border-slate-100 overflow-hidden">
+      <div className="flex items-center justify-between gap-3 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="min-w-0 flex flex-1 items-center gap-2 text-left"
+        >
+          <span className="shrink-0 text-slate-400">
+            {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+          </span>
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-slate-100 text-[10px] font-medium text-slate-600">
+            {breakdown.projectName}
+          </span>
+          <span className="text-xs font-mono text-slate-500">#{breakdown.issueIid}</span>
+          <span className="truncate text-sm font-medium text-slate-800">
+            {breakdown.issueTitle}
+          </span>
+        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="text-sm font-semibold text-sky-700 tabular-nums whitespace-nowrap">
+            {formatHours(breakdown.secondsInPeriod)}
+          </div>
+          <a
+            href={breakdown.issueWebUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-slate-400 hover:text-sky-700 transition"
+            aria-label={`Open ${breakdown.issueTitle}`}
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+          </a>
+        </div>
+      </div>
+
+      {open && (
+        <div className="border-t border-slate-100 bg-slate-50 px-3 py-2">
+          {breakdown.timelogs.length === 0 ? (
+            <div className="text-xs text-slate-500">No dated timelogs available.</div>
+          ) : (
+            <ul className="space-y-1">
+              {breakdown.timelogs.map((timelog) => (
+                <li
+                  key={timelog.id}
+                  className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-xs"
                 >
-                  <div className="min-w-0 flex items-center gap-2">
-                    <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-slate-100 text-[10px] font-medium text-slate-600">
-                      {breakdown.projectName}
-                    </span>
-                    <span className="text-xs font-mono text-slate-500">
-                      #{breakdown.issueIid}
-                    </span>
-                    <a
-                      href={breakdown.issueWebUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-sm font-medium text-slate-800 hover:text-sky-700 transition truncate"
-                    >
-                      <span className="truncate">{breakdown.issueTitle}</span>
-                      <ExternalLink className="w-3 h-3 text-slate-400 shrink-0" />
-                    </a>
+                  <div className="min-w-0 flex items-center gap-2 text-slate-600">
+                    <CalendarClock className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                    <span className="truncate">{formatTimelogDate(timelog.spentAt)}</span>
                   </div>
-                  <div className="text-sm font-semibold text-sky-700 tabular-nums whitespace-nowrap">
-                    {formatHours(breakdown.secondsInPeriod)}
-                  </div>
+                  <span className="font-semibold tabular-nums text-slate-800">
+                    {formatHours(timelog.seconds)}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -195,4 +251,17 @@ function Avatar({ name, url, size }: { name: string; url?: string; size: number 
       {initials}
     </div>
   );
+}
+
+function formatTimelogDate(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+
+  const hasTime = !/T00:00:00(?:\.000)?Z?$/.test(value);
+  return parsed.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    ...(hasTime ? { hour: '2-digit', minute: '2-digit' } : {}),
+  });
 }

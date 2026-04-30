@@ -90,6 +90,11 @@ export interface PersonAggregation {
     issueWebUrl: string;
     projectName: string;
     secondsInPeriod: number;
+    timelogs: {
+      id: string;
+      spentAt: string;
+      seconds: number;
+    }[];
   }[];
 }
 

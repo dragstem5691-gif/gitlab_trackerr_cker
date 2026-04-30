@@ -1,4 +1,4 @@
-import type { CellValue, Worksheet } from 'exceljs';
+import type { Cell, CellValue, Worksheet } from 'exceljs';
 import type { ReportResult } from '../types';
 import {
   PLANNING_EXPORT_COLUMNS,
@@ -16,7 +16,8 @@ import {
 const PLANNING_TEMPLATE_URL = new URL('../../Planning example.xlsx', import.meta.url).href;
 const EXPORT_MIME =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-const MAX_TEMPLATE_COLUMNS = 9;
+const MAX_TEMPLATE_COLUMNS = 10;
+const GITLAB_LINK_COLUMN = 10;
 
 const EMPLOYEE_TEMPLATE_ROW_BY_ROLE: Record<ProjectRole, number> = {
   leadPm: 2,
@@ -169,6 +170,10 @@ function applyWorksheetTemplate(
       targetColumn.style = cloneJson(sourceColumn.style);
     }
   }
+
+  if (!target.getColumn(GITLAB_LINK_COLUMN).width) {
+    target.getColumn(GITLAB_LINK_COLUMN).width = 36;
+  }
 }
 
 function populateHeaderRow(sheet: Worksheet, template: RowTemplate) {
@@ -238,6 +243,8 @@ function populateBody(
 
   const taskHeaderRow = sectionLabelRow + 1;
   applyRowTemplate(sheet, taskHeaderRow, rowTemplates.taskHeader, true);
+  copyCellStyle(sheet.getCell(taskHeaderRow, GITLAB_LINK_COLUMN - 1), sheet.getCell(taskHeaderRow, GITLAB_LINK_COLUMN));
+  sheet.getCell(taskHeaderRow, GITLAB_LINK_COLUMN).value = 'gitlab link';
 
   const taskStartRow = taskHeaderRow + 1;
   taskRows.forEach((task, index) => {
@@ -260,11 +267,27 @@ function populateBody(
       const value = task.hours[column];
       sheet.getCell(rowNumber, TASK_COLUMN_BY_EXPORT_COLUMN[column]).value = value > 0 ? value : null;
     }
+
+    const linkCell = sheet.getCell(rowNumber, GITLAB_LINK_COLUMN);
+    copyCellStyle(sheet.getCell(rowNumber, GITLAB_LINK_COLUMN - 1), linkCell);
+    linkCell.value = task.issueWebUrl
+      ? {
+          text: task.issueWebUrl,
+          hyperlink: task.issueWebUrl,
+          tooltip: task.issueWebUrl,
+        }
+      : null;
+    linkCell.font = {
+      ...cloneJson(linkCell.font || {}),
+      color: { argb: 'FF2563EB' },
+      underline: true,
+    };
   });
 
   const taskTotalRow = taskStartRow + taskRows.length;
   applyRowTemplate(sheet, taskTotalRow, rowTemplates.taskTotal, false);
   sheet.getCell(taskTotalRow, 2).value = 'Total';
+  copyCellStyle(sheet.getCell(taskTotalRow, GITLAB_LINK_COLUMN - 1), sheet.getCell(taskTotalRow, GITLAB_LINK_COLUMN));
 
   for (const column of PLANNING_EXPORT_COLUMNS) {
     const columnNumber = TASK_COLUMN_BY_EXPORT_COLUMN[column];
@@ -317,6 +340,10 @@ function applyRowTemplate(
     cell.style = cloneJson(cellTemplate.style);
     cell.value = copyValues ? cloneJson(cellTemplate.value) : null;
   });
+}
+
+function copyCellStyle(source: Cell, target: Cell) {
+  target.style = cloneJson(source.style);
 }
 
 function verifyTaskTreeExport(sheet: Worksheet, startRow: number, taskRows: PlanningTaskRow[]) {

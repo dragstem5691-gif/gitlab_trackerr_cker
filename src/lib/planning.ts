@@ -59,6 +59,7 @@ export interface PlanningTaskRow {
   boardTitle: string;
   issueId: string;
   issueIid: string;
+  issueWebUrl: string;
   title: string;
   depth: number;
   rowMarker: string;
@@ -260,6 +261,7 @@ export function buildPlanningTaskRows(
       boardTitle: node.issue.projectPath,
       issueId: node.issue.id,
       issueIid: node.issue.iid,
+      issueWebUrl: node.issue.webUrl,
       title: node.issue.title,
       depth,
       rowMarker: isTopLevel ? String(topLevelIndex) : '-',
