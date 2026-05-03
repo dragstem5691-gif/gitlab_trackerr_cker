@@ -14,6 +14,8 @@ import {
   Copy,
   Download,
   GripHorizontal,
+  FileDown,
+  FileUp,
   ListPlus,
   Maximize2,
   Minimize2,
@@ -24,11 +26,13 @@ import {
   SlidersHorizontal,
   Trash2,
   Undo2,
+  Upload,
   UserPlus,
   Users,
 } from 'lucide-react';
 import { usePlanHistory, isEditableTarget } from '../lib/usePlanHistory';
 import { buildPngFilename, exportElementToPng } from '../lib/exportPng';
+import { parsePlanFromYaml, serializePlanToYaml } from '../lib/planYaml';
 import type { ReportResult } from '../types';
 import {
   GitLabClient,
@@ -374,6 +378,124 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
     task.assignments.some((assignment) => assignment.assigneeIds.length === 0)
   ).length;
   const timelineWidth = dates.length * DAY_WIDTH;
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [pushingToGitLab, setPushingToGitLab] = useState(false);
+
+  const handleExportYaml = useCallback(() => {
+    const yaml = serializePlanToYaml(plan, {
+      projectPath: context.projectPath,
+      periodStart: context.period.start,
+      periodEnd: context.period.end,
+    });
+    const blob = new Blob([yaml], { type: 'application/x-yaml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    const safeProject = (context.projectPath || 'plan').replace(/[^a-z0-9_-]+/gi, '-');
+    anchor.download = `${safeProject}-${context.period.start}_${context.period.end}.gantt.yaml`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    showToast('YAML exported');
+  }, [context.period.end, context.period.start, context.projectPath, plan, showToast]);
+
+  const handleImportYamlClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleImportYamlFile = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const { plan: imported } = parsePlanFromYaml(text);
+        if (
+          !window.confirm(
+            `Replace current plan with "${file.name}"? ${imported.tasks.length} task(s), ${imported.people.length} people will be imported.`
+          )
+        ) {
+          return;
+        }
+        resetPlanHistory(imported);
+        setSavedPlanJson(JSON.stringify(imported));
+        showToast('YAML imported');
+      } catch (error) {
+        window.alert(`Import failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+    [resetPlanHistory, showToast]
+  );
+
+  const handlePushToGitLab = useCallback(async () => {
+    if (!gitLabConfig) {
+      window.alert('GitLab connection is not configured.');
+      return;
+    }
+    const peopleById = new Map(plan.people.map((person) => [person.id, person]));
+    const gitlabTasks = plan.tasks.filter(
+      (task) =>
+        task.source === 'gitlab' && task.issueProjectPath && task.issueIid && task.assignments.length > 0
+    );
+    if (gitlabTasks.length === 0) {
+      window.alert('No GitLab-linked tasks to push.');
+      return;
+    }
+
+    type PushPlan = { projectPath: string; iid: string; title: string; dueDate: string };
+    const pushPlan: PushPlan[] = [];
+    for (const task of gitlabTasks) {
+      const endDate = getTaskEndDate(task, plan.people, plan.nonWorkingDates);
+      if (!endDate) continue;
+      pushPlan.push({
+        projectPath: task.issueProjectPath!,
+        iid: task.issueIid!,
+        title: task.title,
+        dueDate: endDate,
+      });
+      void peopleById;
+    }
+
+    const preview = pushPlan
+      .slice(0, 8)
+      .map((entry) => `• ${entry.projectPath}#${entry.iid} → due ${entry.dueDate}`)
+      .join('\n');
+    const suffix = pushPlan.length > 8 ? `\n…and ${pushPlan.length - 8} more` : '';
+    const message = `Push due dates to GitLab for ${pushPlan.length} issue(s)?\n\n${preview}${suffix}\n\nThis will overwrite existing due dates in GitLab.`;
+    if (!window.confirm(message)) return;
+
+    setPushingToGitLab(true);
+    try {
+      const client = new GitLabClient(gitLabConfig.instanceOrigin, gitLabConfig.token);
+      let succeeded = 0;
+      const failures: string[] = [];
+      for (const entry of pushPlan) {
+        try {
+          await client.updateIssueDates(entry.projectPath, entry.iid, { dueDate: entry.dueDate });
+          succeeded += 1;
+        } catch (error) {
+          failures.push(
+            `${entry.projectPath}#${entry.iid}: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      }
+      const summary = [
+        `Updated ${succeeded}/${pushPlan.length} issue(s) in GitLab.`,
+        failures.length > 0 ? `Failures:\n${failures.slice(0, 10).join('\n')}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+      window.alert(summary);
+      showToast(`Pushed ${succeeded} date(s)`);
+    } finally {
+      setPushingToGitLab(false);
+    }
+  }, [gitLabConfig, plan, showToast]);
 
   const handleSavePlan = () => {
     const changedTasks = countChangedTasks(savedPlanJson, plan);
@@ -759,6 +881,45 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
               <Save className="h-4 w-4" />
               Save local plan
             </button>
+            <div className="inline-flex rounded-lg border border-white/15 bg-white/10 p-0.5">
+              <button
+                type="button"
+                onClick={handleExportYaml}
+                title="Export plan as YAML"
+                className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10"
+              >
+                <FileDown className="h-3.5 w-3.5" />
+                Export YAML
+              </button>
+              <button
+                type="button"
+                onClick={handleImportYamlClick}
+                title="Import plan from YAML"
+                className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10"
+              >
+                <FileUp className="h-3.5 w-3.5" />
+                Import YAML
+              </button>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".yaml,.yml,text/yaml,application/x-yaml"
+              className="hidden"
+              onChange={handleImportYamlFile}
+            />
+            {gitLabConfig && (
+              <button
+                type="button"
+                onClick={handlePushToGitLab}
+                disabled={pushingToGitLab}
+                title="Push plan dates to GitLab"
+                className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-emerald-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Upload className="h-4 w-4" />
+                {pushingToGitLab ? 'Pushing…' : 'Set to GitLab'}
+              </button>
+            )}
             <button
               type="button"
               onClick={onBack}
@@ -1601,7 +1762,6 @@ function GanttLaneRow({
           const endDate = scheduledDates[scheduledDates.length - 1] ?? firstScheduledDate;
           const endIndex = dateIndexByDate.get(endDate) ?? startIndex;
           const durationDays = endIndex - startIndex + 1;
-          const laneHoursRaw = scheduledEntries.reduce((sum, entry) => sum + entry.hours, 0);
           const dailyCap = getDailyCapacityHours(assignee);
           const hourWidth = DAY_WIDTH / dailyCap;
           const lastDayHours = scheduledEntries

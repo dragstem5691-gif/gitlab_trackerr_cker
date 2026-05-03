@@ -291,6 +291,29 @@ export class GitLabClient {
     return body.data;
   }
 
+  async updateIssueDates(
+    projectPath: string,
+    iid: string,
+    updates: { dueDate?: string | null }
+  ): Promise<void> {
+    const params = new URLSearchParams();
+    if (updates.dueDate !== undefined) {
+      params.set('due_date', updates.dueDate ?? '');
+    }
+    if (params.toString() === '') return;
+
+    const res = await fetch(
+      `${this.instanceOrigin}/api/v4/projects/${encodeURIComponent(projectPath)}/issues/${iid}?${params.toString()}`,
+      {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${this.token}` },
+      }
+    );
+    if (!res.ok) {
+      throw new Error(`GitLab PUT ${res.status}: ${res.statusText} for ${projectPath}#${iid}`);
+    }
+  }
+
   private async restPage<T>(path: string): Promise<{ data: T; nextPage: string | null }> {
     const res = await fetch(`${this.instanceOrigin}/api/v4${path}`, {
       headers: { Authorization: `Bearer ${this.token}` },
