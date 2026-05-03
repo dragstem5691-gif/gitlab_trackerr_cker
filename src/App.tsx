@@ -239,7 +239,7 @@ function App() {
     setConnectionOpen(true);
   };
 
-  const canOpenReport = !!report || loading;
+  const canOpenReport = true;
   const canOpenPlanning = !!report;
 
   useEffect(() => {
@@ -385,7 +385,7 @@ function App() {
           <GanttBuilderView
             report={report}
             gitLabConfig={ganttGitLabConfig}
-            onBack={() => setPage(report ? 'report' : 'ganttBuilder')}
+            onBack={() => setPage('report')}
           />
         )}
       </main>
