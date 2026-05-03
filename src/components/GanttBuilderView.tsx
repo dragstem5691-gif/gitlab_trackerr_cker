@@ -268,10 +268,32 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
         : [[], []];
       const issues = dedupeGitLabIssues([...mainIssues, ...pmIssues]);
       const selectedMilestone = milestones.find((milestone) => milestone.title === milestoneTitle);
-      const nextPeriod =
+      const milestonePeriod =
         selectedMilestone?.startDate && selectedMilestone?.dueDate
           ? { start: selectedMilestone.startDate, end: selectedMilestone.dueDate }
-          : baseContext.period;
+          : null;
+      let nextPeriod = milestonePeriod ?? baseContext.period;
+
+      if (strategy === 'milestone' && milestonePeriod) {
+        const currentPeriod = gitLabPeriod;
+        const matches =
+          currentPeriod.start === milestonePeriod.start &&
+          currentPeriod.end === milestonePeriod.end;
+        if (!matches) {
+          const useGitLab = window.confirm(
+            [
+              'The selected Gantt range does not match this GitLab milestone.',
+              '',
+              `Current range: ${currentPeriod.start} – ${currentPeriod.end}`,
+              `GitLab milestone "${milestoneTitle}": ${milestonePeriod.start} – ${milestonePeriod.end}`,
+              '',
+              'OK = use GitLab milestone dates.',
+              'Cancel = keep current range.',
+            ].join('\n')
+          );
+          nextPeriod = useGitLab ? milestonePeriod : currentPeriod;
+        }
+      }
       const nextContext = {
         ...baseContext,
         projectPath: gitLabConfig.mainScopePath,
