@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarRange, Clock4, Github, ShieldCheck } from 'lucide-react';
+import { CalendarRange, Play, Sparkles } from 'lucide-react';
 import { FilterForm } from './components/FilterForm';
 import { ReportView } from './components/ReportView';
 import { BuildLog } from './components/BuildLog';
 import { PlanningBuilderView } from './components/PlanningBuilderView';
 import { GanttBuilderView } from './components/GanttBuilderView';
+import { AppShell } from './components/AppShell';
+import { CommandPalette, type CommandAction } from './components/CommandPalette';
+import { ActivityDrawer } from './components/ActivityDrawer';
 import { GitLabClient, loadReportData } from './lib/gitlab';
 import { buildReport } from './lib/aggregation';
 import { BuildLogger, type LogEntry } from './lib/logger';
@@ -15,6 +18,7 @@ import {
   type PlanningAssignments,
 } from './lib/planning';
 import { parseInstanceOrigin, parseProjectPath } from './lib/time';
+import type { AppPage } from './lib/navigation';
 import type { FilterFormValues, ReportResult } from './types';
 
 const SESSION_KEY_FORM = 'gtr.form';
@@ -46,12 +50,15 @@ function loadInitialValues(): FilterFormValues {
 function App() {
   const initial = useMemo(loadInitialValues, []);
   const [report, setReport] = useState<ReportResult | null>(null);
-  const [page, setPage] = useState<'report' | 'planning' | 'ganttBuilder'>('report');
+  const [page, setPage] = useState<AppPage>('report');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formSnapshot, setFormSnapshot] = useState<FilterFormValues>(initial);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [planningAssignments, setPlanningAssignments] = useState<PlanningAssignments>({});
+  const [connectionOpen, setConnectionOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [isDemo, setIsDemo] = useState(false);
   const pendingLogEntriesRef = useRef<LogEntry[]>([]);
   const flushTimerRef = useRef<number | null>(null);
 
@@ -74,7 +81,6 @@ function App() {
       setPlanningAssignments({});
       return;
     }
-
     const boards = buildPlanningBoards(report);
     setPlanningAssignments((previous) => syncPlanningAssignments(boards, previous));
   }, [report]);
@@ -85,7 +91,6 @@ function App() {
       flushTimerRef.current = null;
     }
     if (pendingLogEntriesRef.current.length === 0) return;
-
     const nextBatch = pendingLogEntriesRef.current;
     pendingLogEntriesRef.current = [];
     setLogEntries((prev) => (prev.length === 0 ? nextBatch : [...prev, ...nextBatch]));
@@ -117,7 +122,6 @@ function App() {
     const instanceOrigin = parseInstanceOrigin(formSnapshot.instanceUrl);
     const mainScopePath = parseProjectPath(formSnapshot.instanceUrl);
     if (!instanceOrigin || !mainScopePath) return null;
-
     return {
       instanceOrigin,
       token: formSnapshot.token,
@@ -126,7 +130,8 @@ function App() {
     };
   }, [formSnapshot.instanceUrl, formSnapshot.token, report]);
 
-  const handleSubmit = async (values: FilterFormValues) => {
+  const runReport = async (values: FilterFormValues) => {
+    setIsDemo(false);
     setFormSnapshot(values);
     setError(null);
     setLoading(true);
@@ -180,7 +185,14 @@ function App() {
     }
   };
 
+  const handleSubmit = (values: FilterFormValues) => {
+    setConnectionOpen(false);
+    void runReport(values);
+  };
+
   const handleDemo = () => {
+    setConnectionOpen(false);
+    setIsDemo(true);
     const demoValues: FilterFormValues = {
       ...formSnapshot,
       projectPath: `https://gitlab.example.com/${DEMO_PROJECT_PATH}`,
@@ -223,65 +235,125 @@ function App() {
     setError(null);
     setLogEntries([]);
     setPlanningAssignments({});
+    setIsDemo(false);
+    setConnectionOpen(true);
   };
 
+  const canOpenReport = !!report || loading;
+  const canOpenPlanning = !!report;
+
+  useEffect(() => {
+    if (page === 'planning' && !canOpenPlanning) {
+      setPage(canOpenReport ? 'report' : 'ganttBuilder');
+    }
+  }, [page, canOpenReport, canOpenPlanning]);
+
+  const gitLabStatus: 'connected' | 'disconnected' | 'demo' = isDemo
+    ? 'demo'
+    : report && formSnapshot.token
+    ? 'connected'
+    : 'disconnected';
+
+  const gitLabLabel = isDemo
+    ? 'Demo dataset'
+    : report
+    ? report.projectPath
+    : formSnapshot.projectPath
+    ? 'Not synced'
+    : 'Not connected';
+
+  const breadcrumb = useMemo(() => {
+    const crumbs: string[] = [];
+    if (page === 'report') crumbs.push('Report');
+    if (page === 'planning') crumbs.push('Report', 'Planning');
+    if (page === 'ganttBuilder') crumbs.push('Gantt Builder');
+    if (report && page !== 'ganttBuilder') crumbs.push(report.projectPath);
+    return crumbs;
+  }, [page, report]);
+
+  const commandActions: CommandAction[] = useMemo(
+    () => [
+      {
+        id: 'nav.report',
+        label: 'Go to Report',
+        hint: 'View time tracking report',
+        shortcut: 'Alt+1',
+        disabled: !canOpenReport,
+        onRun: () => setPage('report'),
+      },
+      {
+        id: 'nav.planning',
+        label: 'Go to Planning',
+        hint: 'Assign people to boards',
+        shortcut: 'Alt+2',
+        disabled: !canOpenPlanning,
+        onRun: () => setPage('planning'),
+      },
+      {
+        id: 'nav.gantt',
+        label: 'Go to Gantt Builder',
+        hint: 'Build and edit the Gantt plan',
+        shortcut: 'Alt+3',
+        onRun: () => setPage('ganttBuilder'),
+      },
+      {
+        id: 'action.connect',
+        label: 'Connect to GitLab',
+        hint: 'Open connection panel',
+        onRun: () => {
+          setPage('report');
+          setConnectionOpen(true);
+        },
+      },
+      {
+        id: 'action.demo',
+        label: 'Load demo dataset',
+        hint: 'Explore the app without a GitLab token',
+        onRun: handleDemo,
+      },
+      {
+        id: 'action.reset',
+        label: 'Reset report',
+        hint: 'Start a new report',
+        disabled: !report && !isDemo,
+        onRun: handleReset,
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [canOpenReport, canOpenPlanning, report, isDemo]
+  );
+
+  const hasLogs = logEntries.length > 0 || loading;
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-sky-50">
-      <header className="border-b border-slate-200 bg-white/80 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-slate-900 to-sky-700 text-white flex items-center justify-center shadow-sm">
-              <Clock4 className="w-5 h-5" />
-            </div>
-            <div>
-              <h1 className="text-lg font-bold text-slate-900 leading-tight">
-                GitLab Time Tracking Report
-              </h1>
-              <p className="text-xs text-slate-500">
-                Per-user hours with PM-linked task clusters
-              </p>
-            </div>
-          </div>
-
-          <div className="hidden sm:flex items-center gap-3 text-xs text-slate-500">
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800">
-              <ShieldCheck className="w-3.5 h-3.5" />
-              Session-only storage
-            </span>
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200">
-              <Github className="w-3.5 h-3.5" />
-              GitLab GraphQL
-            </span>
-          </div>
-        </div>
-      </header>
-
+    <AppShell
+      page={page}
+      onChangePage={setPage}
+      canOpenReport={canOpenReport}
+      canOpenPlanning={canOpenPlanning}
+      breadcrumb={breadcrumb}
+      gitLabStatus={gitLabStatus}
+      gitLabLabel={gitLabLabel}
+      onOpenConnection={() => {
+        setPage('report');
+        setConnectionOpen(true);
+      }}
+      onOpenCommandPalette={() => setPaletteOpen(true)}
+    >
       <main
-        className={`mx-auto px-4 py-8 sm:px-6 ${
+        className={`mx-auto px-4 py-6 sm:px-6 ${
           page === 'ganttBuilder' ? 'max-w-[1440px] space-y-5' : 'max-w-6xl space-y-6'
-        }`}
+        } ${hasLogs ? 'pb-24' : ''}`}
       >
-        {page !== 'ganttBuilder' && !report && (
-          <div className="text-center max-w-2xl mx-auto mb-6">
-            <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 tracking-tight">
-              Build a clean time report in seconds
-            </h2>
-            <p className="mt-3 text-slate-600">
-              Pick a PM project and a date range to see tracked hours per person, per issue, and
-              across linked subprojects, with total time and period time side by side.
-            </p>
-            <button
-              type="button"
-              onClick={() => setPage('ganttBuilder')}
-              className="mt-5 inline-flex items-center gap-2 rounded-lg bg-sky-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-800"
-            >
-              <CalendarRange className="h-4 w-4" />
-              Open Gantt Builder
-            </button>
-          </div>
+        {page === 'report' && !report && !loading && !connectionOpen && (
+          <EmptyReport
+            onConnect={() => setConnectionOpen(true)}
+            onDemo={handleDemo}
+            onOpenBuilder={() => setPage('ganttBuilder')}
+          />
         )}
 
-        {page !== 'ganttBuilder' && (
+        {page === 'report' && (connectionOpen || loading || error) && !report && (
           <FilterForm
             initialValues={formSnapshot}
             onSubmit={handleSubmit}
@@ -289,10 +361,6 @@ function App() {
             isLoading={loading}
             error={error}
           />
-        )}
-
-        {page !== 'ganttBuilder' && (logEntries.length > 0 || loading) && (
-          <BuildLog entries={logEntries} isRunning={loading} defaultOpen={loading || !report} />
         )}
 
         {report && page === 'report' && (
@@ -317,15 +385,77 @@ function App() {
           <GanttBuilderView
             report={report}
             gitLabConfig={ganttGitLabConfig}
-            onBack={() => setPage('report')}
+            onBack={() => setPage(report ? 'report' : 'ganttBuilder')}
           />
         )}
       </main>
 
-      <footer className="max-w-6xl mx-auto px-4 sm:px-6 py-8 text-center text-xs text-slate-400">
-        Your GitLab token is kept only in this browser tab&apos;s sessionStorage and never sent
-        anywhere except to your GitLab instance.
-      </footer>
+      {hasLogs && (
+        <ActivityDrawer
+          title="Activity"
+          subtitle={loading ? 'Running build...' : `${logEntries.length} log entries`}
+          badge={logEntries.length}
+          defaultOpen={loading}
+        >
+          <BuildLog entries={logEntries} isRunning={loading} defaultOpen={true} />
+        </ActivityDrawer>
+      )}
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        actions={commandActions}
+      />
+    </AppShell>
+  );
+}
+
+function EmptyReport({
+  onConnect,
+  onDemo,
+  onOpenBuilder,
+}: {
+  onConnect: () => void;
+  onDemo: () => void;
+  onOpenBuilder: () => void;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-10 sm:p-14 text-center max-w-3xl mx-auto">
+      <div className="inline-flex items-center justify-center h-14 w-14 rounded-2xl bg-gradient-to-br from-sky-500 to-emerald-500 text-white mb-5">
+        <Sparkles className="w-6 h-6" />
+      </div>
+      <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">
+        Build a clean time report in seconds
+      </h2>
+      <p className="mt-3 text-slate-600">
+        Connect a GitLab project and pick a date range to see tracked hours per person, per issue,
+        and across linked subprojects. Or jump straight into the Gantt Builder to plan manually.
+      </p>
+      <div className="mt-6 flex flex-wrap justify-center gap-2">
+        <button
+          type="button"
+          onClick={onConnect}
+          className="inline-flex items-center gap-2 rounded-lg bg-sky-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-800"
+        >
+          <Play className="w-4 h-4" />
+          Connect to GitLab
+        </button>
+        <button
+          type="button"
+          onClick={onDemo}
+          className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
+        >
+          Try demo dataset
+        </button>
+        <button
+          type="button"
+          onClick={onOpenBuilder}
+          className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
+        >
+          <CalendarRange className="w-4 h-4" />
+          Open Gantt Builder
+        </button>
+      </div>
     </div>
   );
 }
