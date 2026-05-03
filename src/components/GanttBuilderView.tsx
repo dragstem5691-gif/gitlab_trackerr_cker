@@ -15,6 +15,8 @@ import {
   Download,
   GripHorizontal,
   ListPlus,
+  Maximize2,
+  Minimize2,
   Plus,
   Save,
   RefreshCw,
@@ -165,6 +167,34 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
   const [personFilter, setPersonFilter] = useState('all');
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('all');
   const [builderPage, setBuilderPage] = useState<BuilderPage>('calendar');
+  const [calendarFullscreen, setCalendarFullscreen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem('ganttBuilder.fullscreen') === '1';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('ganttBuilder.fullscreen', calendarFullscreen ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  }, [calendarFullscreen]);
+  useEffect(() => {
+    if (!calendarFullscreen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setCalendarFullscreen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [calendarFullscreen]);
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [gitLabIssues, setGitLabIssues] = useState<GitLabGanttIssue[]>([]);
   const [gitLabMilestones, setGitLabMilestones] = useState<GitLabGanttMilestone[]>([]);
@@ -474,11 +504,8 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
           const rawDeltaPx = event.clientX - dragState.originClientX;
           const deltaHoursRaw = rawDeltaPx / hourWidth;
           const projected = dragState.originEstimateHours + deltaHoursRaw;
-          const snapped =
-            projected >= dailyCapacity
-              ? Math.round(projected / dailyCapacity) * dailyCapacity
-              : Math.max(1, Math.round(projected));
-          const estimateHours = Math.max(0.25, normalizeEstimateHours(snapped));
+          const snapped = Math.max(1, Math.round(projected));
+          const estimateHours = Math.max(1, normalizeEstimateHours(snapped));
           return updateTaskLaneEstimate(
             current,
             task.id,
@@ -798,9 +825,18 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
               {planWarnings.map((warning) => (
                 <li
                   key={warning.id}
-                  className="rounded-lg border border-amber-200 bg-white/80 px-3 py-2"
+                  className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-white/80 px-3 py-2"
                 >
-                  {warning.message}
+                  <span className="min-w-0 flex-1">{warning.message}</span>
+                  {warning.reference && (
+                    <span
+                      className="max-w-[40%] shrink-0 truncate text-right font-semibold text-sky-700"
+                      dir="rtl"
+                      style={{ unicodeBidi: 'plaintext' }}
+                    >
+                      {warning.reference}
+                    </span>
+                  )}
                 </li>
               ))}
             </ul>
@@ -1154,9 +1190,26 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
           {builderPage === 'calendar' && (
             <section
               ref={calendarExportRef}
-              className="overflow-hidden rounded-xl border border-indigo-200 bg-white shadow-sm"
+              className={
+                calendarFullscreen
+                  ? 'fixed inset-0 z-50 flex flex-col overflow-hidden border-0 bg-white'
+                  : 'overflow-hidden rounded-xl border border-indigo-200 bg-white shadow-sm'
+              }
             >
-              <div className="flex justify-end px-4 pt-3" data-export="ignore">
+              <div className="flex items-center justify-end gap-2 px-4 pt-3" data-export="ignore">
+                <button
+                  type="button"
+                  onClick={() => setCalendarFullscreen((value) => !value)}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                  title={calendarFullscreen ? 'Exit full screen (Esc)' : 'Full screen'}
+                >
+                  {calendarFullscreen ? (
+                    <Minimize2 className="h-3 w-3" />
+                  ) : (
+                    <Maximize2 className="h-3 w-3" />
+                  )}
+                  {calendarFullscreen ? 'Exit full screen' : 'Full screen'}
+                </button>
                 <button
                   type="button"
                   onClick={() => void handleExportPng(calendarExportRef, 'calendar-plan')}
@@ -1188,7 +1241,7 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
             {lanes.length === 0 ? (
               <div className="p-8 text-sm text-slate-500">No lanes match the current filters.</div>
             ) : (
-              <div className="overflow-x-auto">
+              <div className={calendarFullscreen ? 'flex-1 overflow-auto' : 'overflow-x-auto'}>
                 <div style={{ width: LANE_WIDTH + timelineWidth }}>
                   <div className="flex border-b border-indigo-200 bg-indigo-100/70">
                     <div
@@ -1550,11 +1603,15 @@ function GanttLaneRow({
           const durationDays = endIndex - startIndex + 1;
           const laneHoursRaw = scheduledEntries.reduce((sum, entry) => sum + entry.hours, 0);
           const dailyCap = getDailyCapacityHours(assignee);
-          const isHourScaled = durationDays === 1 && laneHoursRaw > 0 && laneHoursRaw < dailyCap;
           const hourWidth = DAY_WIDTH / dailyCap;
-          const width = isHourScaled
-            ? Math.max(hourWidth - 2, laneHoursRaw * hourWidth - 2)
-            : Math.max(DAY_WIDTH - 8, (endIndex - startIndex + 1) * DAY_WIDTH - 8);
+          const lastDayHours = scheduledEntries
+            .filter((entry) => entry.date === endDate)
+            .reduce((sum, entry) => sum + entry.hours, 0);
+          const lastDayIsPartial = lastDayHours > 0 && lastDayHours < dailyCap;
+          const fullDaysPart = Math.max(0, durationDays - (lastDayIsPartial ? 1 : 0)) * DAY_WIDTH;
+          const partialPart = lastDayIsPartial ? lastDayHours * hourWidth : 0;
+          const totalWidth = fullDaysPart + partialPart;
+          const width = Math.max(hourWidth - 2, totalWidth - 2);
           const titleLabel =
             durationDays > 1 ? task.title.trim() : formatCalendarBarTitle(task.title);
           const barHeight = getCalendarBarHeight(titleLabel, width, durationDays);
@@ -1567,7 +1624,7 @@ function GanttLaneRow({
                   height + getLaneItemCalendarBarHeight(item, lanePersonId, peopleById, nonWorkingDates, dateIndexByDate) + BAR_SLOT_GAP,
                 0
               );
-          const left = startIndex * DAY_WIDTH + (isHourScaled ? 1 : 4);
+          const left = startIndex * DAY_WIDTH + 1;
           const color = lanePersonId ? colorsByPersonId[lanePersonId] : undefined;
           const laneHours = roundHours(scheduledEntries.reduce((sum, entry) => sum + entry.hours, 0));
           const warning = getAssignmentTimingWarning(task, assignment);
@@ -1597,23 +1654,31 @@ function GanttLaneRow({
                 <GripHorizontal className="ml-1 mr-1 h-3.5 w-3.5 shrink-0 opacity-60" />
               )}
               <div
-                className={`min-w-0 flex-1 overflow-hidden px-1 ${
-                  isTiny ? 'pr-3 text-center' : 'pr-3'
+                className={`flex min-w-0 flex-1 items-center gap-2 overflow-hidden px-1 ${
+                  isTiny ? 'pr-3' : 'pr-3'
                 }`}
               >
-                <div className="truncate text-[10px] font-bold leading-3 tabular-nums">
-                  {laneHours}h
+                <div className="min-w-0 flex-1 overflow-hidden">
+                  <div className="truncate text-[10px] font-bold leading-3 tabular-nums">
+                    {formatHoursLabel(laneHours, dailyCap)}
+                  </div>
+                  <div
+                    className={`text-[8px] font-semibold leading-3 opacity-90 ${
+                      durationDays > 1 ? 'whitespace-normal break-words' : 'truncate'
+                    }`}
+                  >
+                    {titleLabel}
+                  </div>
                 </div>
-                <div
-                  className={`text-[8px] font-semibold leading-3 opacity-90 ${
-                    durationDays > 1 ? 'whitespace-normal break-words' : 'truncate'
-                  }`}
-                >
-                  {titleLabel}
-                </div>
-                <div className="truncate text-[8px] font-semibold leading-3 opacity-75">
-                  {getTaskBoardLabel(task)}
-                </div>
+                {!isTiny && (
+                  <div
+                    className="max-w-[40%] shrink-0 truncate text-right text-[8px] font-semibold leading-3 opacity-80"
+                    dir="rtl"
+                    style={{ unicodeBidi: 'plaintext' }}
+                  >
+                    {getTaskBoardLabel(task)}
+                  </div>
+                )}
               </div>
               <button
                 type="button"
@@ -1766,8 +1831,16 @@ function TaskDateMatrix({
                       <div className="whitespace-normal break-words text-sm font-semibold leading-5 text-slate-900">
                         {task.title}
                       </div>
-                      <div className="mt-1 inline-flex max-w-full rounded-md border border-cyan-100 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-cyan-800">
-                        <span className="break-all">{getTaskBoardLabel(task)}</span>
+                      <div className="mt-1 flex justify-end">
+                        <div className="inline-flex max-w-full rounded-md border border-cyan-100 bg-white px-1.5 py-0.5 text-[11px] font-semibold text-cyan-800">
+                          <span
+                            className="truncate"
+                            dir="rtl"
+                            style={{ unicodeBidi: 'plaintext' }}
+                          >
+                            {getTaskBoardLabel(task)}
+                          </span>
+                        </div>
                       </div>
                       <div className="mt-1 whitespace-normal break-words text-xs leading-4 text-slate-500">
                         {taskSummary}
@@ -1825,10 +1898,18 @@ function TaskDateMatrix({
                             title={`${taskBar.peopleLabel}, ${taskBar.hours}h, ${getTaskBoardLabel(task)}, ${taskBar.startDate} - ${taskBar.endDate}${warning ? `. ${warning}` : ''}`}
                           >
                             <GripHorizontal className="ml-1 mr-1 h-3.5 w-3.5 shrink-0 opacity-60" />
-                            <div className="min-w-0 flex-1 truncate px-1">
-                              <span className="font-bold">{taskBar.peopleLabel}</span>
-                              <span className="ml-1 opacity-80">{taskBar.hours}h</span>
-                              <span className="ml-1 opacity-70">{getTaskBoardLabel(task)}</span>
+                            <div className="flex min-w-0 flex-1 items-center gap-2 px-1">
+                              <div className="min-w-0 flex-1 truncate">
+                                <span className="font-bold">{taskBar.peopleLabel}</span>
+                                <span className="ml-1 opacity-80">{taskBar.hours}h</span>
+                              </div>
+                              <span
+                                className="max-w-[45%] shrink-0 truncate text-right opacity-70"
+                                dir="rtl"
+                                style={{ unicodeBidi: 'plaintext' }}
+                              >
+                                {getTaskBoardLabel(task)}
+                              </span>
                             </div>
                           </div>
                         );
@@ -2302,7 +2383,7 @@ function TaskEditor({
       </div>
 
       {task.source === 'gitlab' && (
-        <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
+        <div className="flex flex-wrap items-center justify-end gap-2 text-[11px] text-slate-600">
           {task.issueWebUrl ? (
             <a
               href={task.issueWebUrl}
@@ -3184,6 +3265,7 @@ function sortTasksByPlanOrder(left: GanttBuilderTask, right: GanttBuilderTask) {
 interface PlanWarning {
   id: string;
   message: string;
+  reference?: string;
 }
 
 function buildPlanWarnings(plan: GanttBuilderPlan, context: ReturnType<typeof createGanttBuilderContext>): PlanWarning[] {
@@ -3202,14 +3284,16 @@ function buildPlanWarnings(plan: GanttBuilderPlan, context: ReturnType<typeof cr
     if (task.gitlabState === 'closed' && taskEndDate > today) {
       warnings.push({
         id: `${task.id}:closed-future`,
-        message: `${taskRef} is closed in GitLab but planned into the future.`,
+        message: `Closed in GitLab but planned into the future.`,
+        reference: taskRef,
       });
     }
 
     if (task.gitlabState !== 'closed' && taskEndDate < today) {
       warnings.push({
         id: `${task.id}:open-past`,
-        message: `${taskRef} is still open in GitLab but the local plan ends before today.`,
+        message: `Still open in GitLab but the local plan ends before today.`,
+        reference: taskRef,
       });
     }
 
@@ -3221,14 +3305,16 @@ function buildPlanWarnings(plan: GanttBuilderPlan, context: ReturnType<typeof cr
       const gitlabNames = task.gitlabAssigneeNames?.join(', ') || 'unassigned';
       warnings.push({
         id: `${task.id}:assignees`,
-        message: `${taskRef} local assignees (${plannedNames}) differ from GitLab (${gitlabNames}).`,
+        message: `Local assignees (${plannedNames}) differ from GitLab (${gitlabNames}).`,
+        reference: taskRef,
       });
     }
 
     if (task.gitlabTimeEstimateHours === 0) {
       warnings.push({
         id: `${task.id}:no-estimate`,
-        message: `${taskRef} has no GitLab time estimate.`,
+        message: `Has no GitLab time estimate.`,
+        reference: taskRef,
       });
     }
 
@@ -3240,14 +3326,16 @@ function buildPlanWarnings(plan: GanttBuilderPlan, context: ReturnType<typeof cr
     ) {
       warnings.push({
         id: `${task.id}:spent-over-estimate`,
-        message: `${taskRef} spent time is already above GitLab estimate.`,
+        message: `Spent time is already above GitLab estimate.`,
+        reference: taskRef,
       });
     }
 
     if (task.startDate < context.period.start || taskEndDate > context.period.end) {
       warnings.push({
         id: `${task.id}:outside-period`,
-        message: `${taskRef} is planned outside the selected Gantt period.`,
+        message: `Planned outside the selected Gantt period.`,
+        reference: taskRef,
       });
     }
   }
@@ -3422,6 +3510,16 @@ function clamp(value: number, min: number, max: number) {
 
 function roundHours(hours: number) {
   return Math.round(hours * 100) / 100;
+}
+
+function formatHoursLabel(hours: number, dailyCap: number) {
+  const rounded = roundHours(hours);
+  if (rounded <= 0 || dailyCap <= 0) return `${rounded}h`;
+  if (rounded < dailyCap) return `${rounded}h`;
+  const days = Math.floor(rounded / dailyCap);
+  const remainder = roundHours(rounded - days * dailyCap);
+  if (remainder === 0) return `${rounded}h`;
+  return `${rounded}h (${days}d ${remainder}h)`;
 }
 
 function formatDay(date: string) {
