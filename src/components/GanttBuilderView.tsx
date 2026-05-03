@@ -39,7 +39,6 @@ import {
   DEFAULT_TASK_ESTIMATE_HOURS,
   buildCapacityWeekLoads,
   buildGanttBuilderCalendarDates,
-  countPlanWorkingDaysBetween,
   createGanttBuilderContext,
   createGitLabGanttBuilderPlan,
   createManualPerson,
@@ -466,21 +465,20 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
         }
 
         if (dragState.mode === 'resize') {
-          const startIndex = clamp(dragState.originStartIndex, 0, dates.length - 1);
-          const endIndex = clamp(dragState.originStartIndex + deltaDays, startIndex, dates.length - 1);
-          const workDays = countPlanWorkingDaysBetween(
-            dates[startIndex],
-            dates[endIndex],
-            current.nonWorkingDates
-          );
           const assignee =
             dragState.laneId === UNASSIGNED_LANE_ID
               ? undefined
               : current.people.find((person) => person.id === dragState.laneId);
-          const estimateHours =
-            workDays === dragState.originWorkDays
-              ? dragState.originEstimateHours
-              : normalizeEstimateHours(workDays * getDailyCapacityHours(assignee));
+          const dailyCapacity = getDailyCapacityHours(assignee);
+          const hourWidth = DAY_WIDTH / dailyCapacity;
+          const rawDeltaPx = event.clientX - dragState.originClientX;
+          const deltaHoursRaw = rawDeltaPx / hourWidth;
+          const projected = dragState.originEstimateHours + deltaHoursRaw;
+          const snapped =
+            projected >= dailyCapacity
+              ? Math.round(projected / dailyCapacity) * dailyCapacity
+              : Math.max(1, Math.round(projected));
+          const estimateHours = Math.max(0.25, normalizeEstimateHours(snapped));
           return updateTaskLaneEstimate(
             current,
             task.id,
@@ -1514,14 +1512,27 @@ function GanttLaneRow({
           {dates.map((date) => (
             <div
               key={date}
-              className={`border-r border-slate-200 ${
+              className={`relative border-r border-slate-200 ${
                 isPlanWorkingDay(date, nonWorkingDates)
                   ? ''
                   : nonWorkingDates.includes(date)
                     ? 'bg-rose-50/90'
                     : 'bg-amber-50/80'
               }`}
-            />
+            >
+              {isPlanWorkingDay(date, nonWorkingDates) && (
+                <div
+                  className="pointer-events-none absolute inset-0 opacity-50"
+                  style={{
+                    backgroundImage: `repeating-linear-gradient(to right, transparent 0, transparent ${
+                      DAY_WIDTH / 8 - 1
+                    }px, rgba(148,163,184,0.25) ${DAY_WIDTH / 8 - 1}px, rgba(148,163,184,0.25) ${
+                      DAY_WIDTH / 8
+                    }px)`,
+                  }}
+                />
+              )}
+            </div>
           ))}
         </div>
 
@@ -1537,7 +1548,13 @@ function GanttLaneRow({
           const endDate = scheduledDates[scheduledDates.length - 1] ?? firstScheduledDate;
           const endIndex = dateIndexByDate.get(endDate) ?? startIndex;
           const durationDays = endIndex - startIndex + 1;
-          const width = Math.max(DAY_WIDTH - 8, (endIndex - startIndex + 1) * DAY_WIDTH - 8);
+          const laneHoursRaw = scheduledEntries.reduce((sum, entry) => sum + entry.hours, 0);
+          const dailyCap = getDailyCapacityHours(assignee);
+          const isHourScaled = durationDays === 1 && laneHoursRaw > 0 && laneHoursRaw < dailyCap;
+          const hourWidth = DAY_WIDTH / dailyCap;
+          const width = isHourScaled
+            ? Math.max(hourWidth - 2, laneHoursRaw * hourWidth - 2)
+            : Math.max(DAY_WIDTH - 8, (endIndex - startIndex + 1) * DAY_WIDTH - 8);
           const titleLabel =
             durationDays > 1 ? task.title.trim() : formatCalendarBarTitle(task.title);
           const barHeight = getCalendarBarHeight(titleLabel, width, durationDays);
@@ -1550,7 +1567,7 @@ function GanttLaneRow({
                   height + getLaneItemCalendarBarHeight(item, lanePersonId, peopleById, nonWorkingDates, dateIndexByDate) + BAR_SLOT_GAP,
                 0
               );
-          const left = startIndex * DAY_WIDTH + 4;
+          const left = startIndex * DAY_WIDTH + (isHourScaled ? 1 : 4);
           const color = lanePersonId ? colorsByPersonId[lanePersonId] : undefined;
           const laneHours = roundHours(scheduledEntries.reduce((sum, entry) => sum + entry.hours, 0));
           const warning = getAssignmentTimingWarning(task, assignment);
