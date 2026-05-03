@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -10,16 +11,22 @@ import {
   ArrowLeft,
   CalendarRange,
   CheckCircle2,
+  Copy,
+  Download,
   GripHorizontal,
   ListPlus,
   Plus,
   Save,
   RefreshCw,
+  Redo2,
   SlidersHorizontal,
   Trash2,
+  Undo2,
   UserPlus,
   Users,
 } from 'lucide-react';
+import { usePlanHistory, isEditableTarget } from '../lib/usePlanHistory';
+import { buildPngFilename, exportElementToPng } from '../lib/exportPng';
 import type { ReportResult } from '../types';
 import {
   GitLabClient,
@@ -132,8 +139,24 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
         : baseContext,
     [baseContext, builderMode, gitLabConfig?.mainScopePath, gitLabPeriod]
   );
-  const [plan, setPlan] = useState<GanttBuilderPlan>(() => loadGanttBuilderPlan(context));
+  const planHistory = usePlanHistory<GanttBuilderPlan>(loadGanttBuilderPlan(context));
+  const plan = planHistory.state;
+  const setPlan = planHistory.setState;
+  const resetPlanHistory = planHistory.resetHistory;
   const [savedPlanJson, setSavedPlanJson] = useState(() => JSON.stringify(plan));
+  const [clipboardTask, setClipboardTask] = useState<GanttBuilderTask | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 1600);
+  }, []);
+  const calendarExportRef = useRef<HTMLDivElement | null>(null);
+  const tasksExportRef = useRef<HTMLDivElement | null>(null);
+  const weeklyExportRef = useRef<HTMLDivElement | null>(null);
+  const matrixExportRef = useRef<HTMLDivElement | null>(null);
+  const realityExportRef = useRef<HTMLDivElement | null>(null);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskEstimate, setTaskEstimate] = useState(String(DEFAULT_TASK_ESTIMATE_HOURS));
   const [taskRole, setTaskRole] = useState<ProjectRole | null>(null);
@@ -160,8 +183,9 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
   useEffect(() => {
     if (builderMode === 'gitlab') return;
     const nextPlan = loadGanttBuilderPlan(context);
-    setPlan(nextPlan);
+    resetPlanHistory(nextPlan);
     setSavedPlanJson(JSON.stringify(nextPlan));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [builderMode, context, storageKey]);
 
   useEffect(() => {
@@ -227,7 +251,7 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
       setGitLabMilestones(milestones);
       setGitLabIssues(issues);
       setGitLabPeriod(nextPeriod);
-      setPlan(nextPlan);
+      resetPlanHistory(nextPlan);
       setSavedPlanJson(JSON.stringify(nextPlan));
       if (strategy === 'milestone' && !milestoneTitle) {
         setGitLabNotice('Choose a milestone to load tasks. This prevents loading old GitLab tails.');
@@ -338,6 +362,85 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
     setSavedPlanJson(JSON.stringify(plan));
   };
 
+  const handleCopySelection = useCallback(() => {
+    const task = plan.tasks[0];
+    if (!task) return;
+    const target = clipboardTask ?? task;
+    setClipboardTask(target);
+    showToast(`Copied ${target.title || 'task'}`);
+  }, [plan.tasks, clipboardTask, showToast]);
+
+  const handlePasteSelection = useCallback(() => {
+    if (!clipboardTask) {
+      showToast('Clipboard is empty');
+      return;
+    }
+    const cloned: GanttBuilderTask = {
+      ...clipboardTask,
+      id: `${clipboardTask.id}-copy-${Date.now().toString(36)}`,
+      title: `${clipboardTask.title} (copy)`,
+      assignments: clipboardTask.assignments.map((assignment) => ({
+        ...assignment,
+        id: `${assignment.id}-copy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      })),
+    };
+    setPlan((current) => ({
+      ...current,
+      tasks: [...current.tasks, cloned],
+      updatedAt: new Date().toISOString(),
+    }));
+    showToast('Pasted task');
+  }, [clipboardTask, setPlan, showToast]);
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      const mod = event.ctrlKey || event.metaKey;
+      if (!mod) return;
+      const key = event.key.toLowerCase();
+      if (key === 'z' && !event.shiftKey) {
+        if (isEditableTarget(event.target)) return;
+        event.preventDefault();
+        planHistory.undo();
+        showToast('Undo');
+      } else if ((key === 'y') || (key === 'z' && event.shiftKey)) {
+        if (isEditableTarget(event.target)) return;
+        event.preventDefault();
+        planHistory.redo();
+        showToast('Redo');
+      } else if (key === 'c') {
+        if (isEditableTarget(event.target)) return;
+        event.preventDefault();
+        handleCopySelection();
+      } else if (key === 'v') {
+        if (isEditableTarget(event.target)) return;
+        event.preventDefault();
+        handlePasteSelection();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [planHistory, handleCopySelection, handlePasteSelection, showToast]);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
+  const handleExportPng = useCallback(
+    async (ref: React.RefObject<HTMLElement>, label: string) => {
+      if (!ref.current) return;
+      try {
+        await exportElementToPng(ref.current, buildPngFilename(label));
+        showToast(`Exported ${label}.png`);
+      } catch (err) {
+        console.error('PNG export failed', err);
+        showToast('Export failed');
+      }
+    },
+    [showToast]
+  );
+
   useEffect(() => {
     if (!dragState) return;
 
@@ -419,7 +522,11 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
   const handleCreateTask = () => {
     if (!taskTitle.trim()) return;
 
-    const estimateHours = Number(taskEstimate.replace(',', '.'));
+    const parsedEstimate = Number(String(taskEstimate).trim().replace(',', '.'));
+    const estimateHours =
+      Number.isFinite(parsedEstimate) && parsedEstimate > 0
+        ? Math.max(0.25, parsedEstimate)
+        : DEFAULT_TASK_ESTIMATE_HOURS;
     const task = createTask({
       title: taskTitle,
       estimateHours,
@@ -596,6 +703,28 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
                 Use GitLab
               </button>
             </div>
+            <div className="inline-flex rounded-lg border border-white/15 bg-white/10 p-0.5">
+              <button
+                type="button"
+                onClick={() => planHistory.undo()}
+                disabled={!planHistory.canUndo}
+                title="Undo (Ctrl+Z)"
+                className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Undo2 className="h-3.5 w-3.5" />
+                Undo
+              </button>
+              <button
+                type="button"
+                onClick={() => planHistory.redo()}
+                disabled={!planHistory.canRedo}
+                title="Redo (Ctrl+Y)"
+                className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Redo2 className="h-3.5 w-3.5" />
+                Redo
+              </button>
+            </div>
             <button
               type="button"
               onClick={handleSavePlan}
@@ -626,24 +755,58 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
       </div>
 
       {builderMode === 'gitlab' && planWarnings.length > 0 && (
-        <section className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-          <div className="font-semibold">GitLab reality checks</div>
-          <div className="mt-1 text-xs text-amber-800">
-            These warnings do not block planning. They only highlight places where the local plan
-            differs from GitLab facts.
-          </div>
-          <ul className="mt-3 grid gap-1.5 text-xs">
-            {planWarnings.slice(0, 8).map((warning) => (
-              <li key={warning.id} className="rounded-lg border border-amber-200 bg-white/70 px-3 py-2">
-                {warning.message}
-              </li>
-            ))}
-          </ul>
-          {planWarnings.length > 8 && (
-            <div className="mt-2 text-xs text-amber-800">
-              +{planWarnings.length - 8} more warning(s) in the editable task list.
+        <section
+          ref={realityExportRef}
+          className="rounded-xl border border-amber-200 bg-amber-50 text-sm text-amber-950"
+        >
+          <div className="sticky top-0 z-[1] flex items-center justify-between gap-3 rounded-t-xl border-b border-amber-200 bg-amber-100/90 px-4 py-2.5 backdrop-blur">
+            <div className="min-w-0">
+              <div className="font-semibold">
+                GitLab reality checks
+                <span className="ml-2 inline-flex items-center justify-center rounded-full bg-amber-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                  {planWarnings.length}
+                </span>
+              </div>
+              <div className="text-[11px] text-amber-800">
+                Local plan vs GitLab facts. Warnings do not block planning.
+              </div>
             </div>
-          )}
+            <div className="flex items-center gap-1.5" data-export="ignore">
+              <button
+                type="button"
+                onClick={() => {
+                  const text = planWarnings.map((w) => w.message).join('\n');
+                  void navigator.clipboard.writeText(text).then(() => showToast('Warnings copied'));
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-white/80 px-2 py-1 text-[11px] font-semibold text-amber-900 hover:bg-white"
+                title="Copy all warnings"
+              >
+                <Copy className="h-3 w-3" />
+                Copy
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleExportPng(realityExportRef, 'reality-checks')}
+                className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-white/80 px-2 py-1 text-[11px] font-semibold text-amber-900 hover:bg-white"
+                title="Export as PNG"
+              >
+                <Download className="h-3 w-3" />
+                PNG
+              </button>
+            </div>
+          </div>
+          <div className="max-h-56 overflow-y-auto px-4 py-3">
+            <ul className="grid gap-1.5 text-xs">
+              {planWarnings.map((warning) => (
+                <li
+                  key={warning.id}
+                  className="rounded-lg border border-amber-200 bg-white/80 px-3 py-2"
+                >
+                  {warning.message}
+                </li>
+              ))}
+            </ul>
+          </div>
         </section>
       )}
 
@@ -933,7 +1096,18 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
           />
 
           {builderPage === 'tasks' && (
-            <TaskTableSection
+            <div ref={tasksExportRef} className="space-y-3">
+              <div className="flex justify-end" data-export="ignore">
+                <button
+                  type="button"
+                  onClick={() => void handleExportPng(tasksExportRef, 'tasks-table')}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  <Download className="h-3 w-3" />
+                  Export PNG
+                </button>
+              </div>
+              <TaskTableSection
               tasks={visibleTasks}
               people={plan.people}
               peopleById={peopleById}
@@ -954,20 +1128,46 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
               }
               onTaskDelete={(taskId) => setPlan((current) => deleteTask(current, taskId))}
             />
+            </div>
           )}
 
           {builderPage === 'weekly' && (
-            <WeeklyLoadPanel
-              people={filteredPeople}
-              tasks={plan.tasks}
-              peopleById={peopleById}
-              nonWorkingDates={plan.nonWorkingDates}
-              loadsByPersonId={capacityByPersonId}
-            />
+            <div ref={weeklyExportRef} className="space-y-3">
+              <div className="flex justify-end" data-export="ignore">
+                <button
+                  type="button"
+                  onClick={() => void handleExportPng(weeklyExportRef, 'weekly-load')}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  <Download className="h-3 w-3" />
+                  Export PNG
+                </button>
+              </div>
+              <WeeklyLoadPanel
+                people={filteredPeople}
+                tasks={plan.tasks}
+                peopleById={peopleById}
+                nonWorkingDates={plan.nonWorkingDates}
+                loadsByPersonId={capacityByPersonId}
+              />
+            </div>
           )}
 
           {builderPage === 'calendar' && (
-            <section className="overflow-hidden rounded-xl border border-indigo-200 bg-white shadow-sm">
+            <section
+              ref={calendarExportRef}
+              className="overflow-hidden rounded-xl border border-indigo-200 bg-white shadow-sm"
+            >
+              <div className="flex justify-end px-4 pt-3" data-export="ignore">
+                <button
+                  type="button"
+                  onClick={() => void handleExportPng(calendarExportRef, 'calendar-plan')}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  <Download className="h-3 w-3" />
+                  Export PNG
+                </button>
+              </div>
             <div className="border-b border-indigo-200 bg-indigo-50 px-4 py-3">
               <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                 <div>
@@ -1063,22 +1263,42 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
           )}
 
           {builderPage === 'matrix' && (
-            <TaskDateMatrix
-              tasks={visibleTasks}
-              dates={dates}
-              dateIndexByDate={dateIndexByDate}
-              peopleById={peopleById}
-              nonWorkingDates={plan.nonWorkingDates}
-              colorsByPersonId={colorsByPersonId}
-              onTaskPointerDown={handleTaskPointerDown}
-              onTaskReorder={(draggedTaskId, targetTaskId) =>
-                setPlan((current) => reorderPlanTasks(current, draggedTaskId, targetTaskId))
-              }
-            />
+            <div ref={matrixExportRef} className="space-y-3">
+              <div className="flex justify-end" data-export="ignore">
+                <button
+                  type="button"
+                  onClick={() => void handleExportPng(matrixExportRef, 'task-date-matrix')}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  <Download className="h-3 w-3" />
+                  Export PNG
+                </button>
+              </div>
+              <TaskDateMatrix
+                tasks={visibleTasks}
+                dates={dates}
+                dateIndexByDate={dateIndexByDate}
+                peopleById={peopleById}
+                nonWorkingDates={plan.nonWorkingDates}
+                colorsByPersonId={colorsByPersonId}
+                onTaskPointerDown={handleTaskPointerDown}
+                onTaskReorder={(draggedTaskId, targetTaskId) =>
+                  setPlan((current) => reorderPlanTasks(current, draggedTaskId, targetTaskId))
+                }
+              />
+            </div>
           )}
 
         </section>
       </div>
+      {toast && (
+        <div
+          className="pointer-events-none fixed bottom-24 left-1/2 z-40 -translate-x-1/2 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white shadow-lg"
+          role="status"
+        >
+          {toast}
+        </div>
+      )}
     </div>
   );
 }
@@ -2169,9 +2389,16 @@ function AssignmentEditor({
   }, [assignment.estimateHours]);
 
   const commitEstimate = () => {
-    const parsed = Number(estimateDraft.replace(',', '.'));
+    const trimmed = estimateDraft.trim();
+    if (!trimmed) {
+      setEstimateDraft(String(assignment.estimateHours));
+      return;
+    }
+    const parsed = Number(trimmed.replace(',', '.'));
     if (Number.isFinite(parsed) && parsed > 0) {
-      onChange({ estimateHours: normalizeEstimateHours(parsed) });
+      const normalized = Math.max(0.25, normalizeEstimateHours(parsed));
+      onChange({ estimateHours: normalized });
+      setEstimateDraft(String(normalized));
       return;
     }
     setEstimateDraft(String(assignment.estimateHours));
@@ -2328,9 +2555,16 @@ function PersonEstimateInput({
   }, [value]);
 
   const commit = () => {
-    const parsed = Number(draft.replace(',', '.'));
+    const trimmed = draft.trim();
+    if (!trimmed) {
+      setDraft(String(value));
+      return;
+    }
+    const parsed = Number(trimmed.replace(',', '.'));
     if (Number.isFinite(parsed) && parsed > 0) {
-      onCommit(parsed);
+      const normalized = Math.max(0.25, Math.round(parsed * 4) / 4);
+      onCommit(normalized);
+      setDraft(String(normalized));
       return;
     }
     setDraft(String(value));
