@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
@@ -742,6 +743,48 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
     setNewPersonName('');
   };
 
+  const handleAddCalendarDay = () => {
+    setPlan((current) => ({
+      ...current,
+      extraCalendarDays: Math.max(0, Math.floor(current.extraCalendarDays ?? 0)) + 1,
+    }));
+  };
+
+  const handleRemoveCalendarDay = (date: string) => {
+    const lastDate = dates[dates.length - 1];
+    if (date !== lastDate) {
+      showToast('Only the last day can be removed');
+      return;
+    }
+    const currentExtra = Math.max(0, Math.floor(plan.extraCalendarDays ?? 0));
+    if (currentExtra === 0) {
+      showToast('Cannot shrink the calendar below the plan period');
+      return;
+    }
+    let minEnd = context.period.end;
+    for (const task of plan.tasks) {
+      const taskEnd = getTaskEndDate(task, plan.people, plan.nonWorkingDates);
+      if (taskEnd > minEnd) minEnd = taskEnd;
+    }
+    if (lastDate <= minEnd) {
+      showToast('Day is needed to fit existing tasks');
+      return;
+    }
+    setPlan((current) => ({
+      ...current,
+      extraCalendarDays: Math.max(0, (current.extraCalendarDays ?? 0) - 1),
+    }));
+  };
+
+  const handleDayContextMenu = (event: ReactMouseEvent<HTMLElement>, date: string) => {
+    event.preventDefault();
+    const lastDate = dates[dates.length - 1];
+    if (date !== lastDate) return;
+    if (window.confirm(`Remove ${date} from the calendar?`)) {
+      handleRemoveCalendarDay(date);
+    }
+  };
+
   const handleToggleNonWorkingDate = (date: string) => {
     if (!isWorkingDay(date)) return;
 
@@ -1434,41 +1477,57 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
                       Assignee
                     </div>
                     <div
-                      className="grid shrink-0"
+                      className="relative grid shrink-0"
                       style={{
                         width: timelineWidth,
                         gridTemplateColumns: `repeat(${dates.length}, ${DAY_WIDTH}px)`,
                       }}
                     >
-                      {dates.map((date) => (
-                        <button
-                          key={date}
-                          type="button"
-                          onClick={() => handleToggleNonWorkingDate(date)}
-                          disabled={!isWorkingDay(date)}
-                          title={
-                            !isWorkingDay(date)
-                              ? 'Built-in weekend'
-                              : plan.nonWorkingDates.includes(date)
-                                ? 'Mark as working day'
-                                : 'Mark as extra day off'
-                          }
-                          className={`border-r border-slate-200 px-1 py-1.5 text-center transition disabled:cursor-default ${
-                            !isWorkingDay(date)
-                              ? 'bg-amber-100/80'
-                              : plan.nonWorkingDates.includes(date)
-                                ? 'bg-rose-100 text-rose-950 hover:bg-rose-200'
-                                : 'bg-white hover:bg-sky-50'
-                          }`}
-                        >
-                          <div className="text-[11px] font-semibold leading-none text-slate-900">
-                            {formatDay(date)}
-                          </div>
-                          <div className="mt-0.5 text-[9px] uppercase leading-none text-slate-500">
-                            {formatWeekday(date)}
-                          </div>
-                        </button>
-                      ))}
+                      {dates.map((date, index) => {
+                        const isLast = index === dates.length - 1;
+                        const removable =
+                          isLast && (plan.extraCalendarDays ?? 0) > 0;
+                        return (
+                          <button
+                            key={date}
+                            type="button"
+                            onClick={() => handleToggleNonWorkingDate(date)}
+                            onContextMenu={(event) => handleDayContextMenu(event, date)}
+                            disabled={!isWorkingDay(date)}
+                            title={
+                              !isWorkingDay(date)
+                                ? 'Built-in weekend'
+                                : plan.nonWorkingDates.includes(date)
+                                  ? `Mark as working day${removable ? ' (right-click to remove day)' : ''}`
+                                  : `Mark as extra day off${removable ? ' (right-click to remove day)' : ''}`
+                            }
+                            className={`border-r border-slate-200 px-1 py-1.5 text-center transition disabled:cursor-default ${
+                              !isWorkingDay(date)
+                                ? 'bg-amber-100/80'
+                                : plan.nonWorkingDates.includes(date)
+                                  ? 'bg-rose-100 text-rose-950 hover:bg-rose-200'
+                                  : 'bg-white hover:bg-sky-50'
+                            }`}
+                          >
+                            <div className="text-[11px] font-semibold leading-none text-slate-900">
+                              {formatDay(date)}
+                            </div>
+                            <div className="mt-0.5 text-[9px] uppercase leading-none text-slate-500">
+                              {formatWeekday(date)}
+                            </div>
+                          </button>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        onClick={handleAddCalendarDay}
+                        title="Add one day to the calendar"
+                        data-export="ignore"
+                        className="absolute -right-8 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full border border-indigo-300 bg-white text-indigo-700 shadow-sm transition hover:bg-indigo-50"
+                        aria-label="Add day"
+                      >
+                        <Plus className="h-4 w-4" />
+                      </button>
                     </div>
                   </div>
 

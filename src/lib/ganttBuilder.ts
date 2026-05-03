@@ -51,6 +51,7 @@ export interface GanttBuilderPlan {
   tasks: GanttBuilderTask[];
   nonWorkingDates: string[];
   updatedAt: string;
+  extraCalendarDays?: number;
 }
 
 export interface GanttBuilderContext {
@@ -191,6 +192,10 @@ export function loadGanttBuilderPlan(context: GanttBuilderContext): GanttBuilder
         tasks: rawTasks,
         nonWorkingDates,
         updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : fallback.updatedAt,
+        extraCalendarDays:
+          typeof parsed.extraCalendarDays === 'number' && parsed.extraCalendarDays > 0
+            ? Math.floor(parsed.extraCalendarDays)
+            : undefined,
       },
       context
     );
@@ -239,6 +244,10 @@ export function normalizePlanForReport(
     tasks,
     nonWorkingDates,
     updatedAt: plan.updatedAt,
+    extraCalendarDays:
+      typeof plan.extraCalendarDays === 'number' && plan.extraCalendarDays > 0
+        ? Math.floor(plan.extraCalendarDays)
+        : undefined,
   };
 }
 
@@ -398,6 +407,11 @@ export function buildGanttBuilderCalendarDates(
     if (taskEndDate > endDate) {
       endDate = taskEndDate;
     }
+  }
+
+  const extra = Math.max(0, Math.floor(plan.extraCalendarDays ?? 0));
+  if (extra > 0) {
+    endDate = fromUtcDay(toUtcDay(endDate) + extra);
   }
 
   return enumerateDates(context.period.start, endDate);

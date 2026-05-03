@@ -93,6 +93,7 @@ export function serializePlanToYaml(plan: GanttBuilderPlan, meta: PlanYamlMeta):
     projectPath: meta.projectPath,
     period: { start: meta.periodStart, end: meta.periodEnd },
     updatedAt: plan.updatedAt,
+    extraCalendarDays: plan.extraCalendarDays ?? 0,
     nonWorkingDates: plan.nonWorkingDates,
     people: plan.people.map((person) => ({
       id: person.id,
@@ -315,6 +316,10 @@ export function parsePlanFromYaml(source: string): ParsedPlanDocument {
     tasks,
     nonWorkingDates,
     updatedAt: String(doc.updatedAt ?? new Date().toISOString()),
+    extraCalendarDays:
+      typeof doc.extraCalendarDays === 'number' && doc.extraCalendarDays > 0
+        ? Math.floor(doc.extraCalendarDays as number)
+        : undefined,
   };
   return { plan, meta };
 }
