@@ -468,15 +468,27 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
       return;
     }
 
-    type PushPlan = { projectPath: string; iid: string; title: string; dueDate: string };
+    type PushPlan = {
+      projectPath: string;
+      iid: string;
+      title: string;
+      startDate: string;
+      dueDate: string;
+    };
     const pushPlan: PushPlan[] = [];
     for (const task of gitlabTasks) {
       const endDate = getTaskEndDate(task, plan.people, plan.nonWorkingDates);
       if (!endDate) continue;
+      const startDate =
+        task.assignments
+          .map((assignment) => assignment.startDate)
+          .filter((date): date is string => Boolean(date))
+          .sort()[0] ?? task.startDate;
       pushPlan.push({
         projectPath: task.issueProjectPath!,
         iid: task.issueIid!,
         title: task.title,
+        startDate,
         dueDate: endDate,
       });
       void peopleById;
@@ -484,7 +496,7 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
 
     const preview = pushPlan
       .slice(0, 8)
-      .map((entry) => `• ${entry.projectPath}#${entry.iid} → due ${entry.dueDate}`)
+      .map((entry) => `• ${entry.projectPath}#${entry.iid} → ${entry.startDate} – ${entry.dueDate}`)
       .join('\n');
     const suffix = pushPlan.length > 8 ? `\n…and ${pushPlan.length - 8} more` : '';
     const message = `Push due dates to GitLab for ${pushPlan.length} issue(s)?\n\n${preview}${suffix}\n\nThis will overwrite existing due dates in GitLab.`;
@@ -497,7 +509,10 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
       const failures: string[] = [];
       for (const entry of pushPlan) {
         try {
-          await client.updateIssueDates(entry.projectPath, entry.iid, { dueDate: entry.dueDate });
+          await client.updateIssueDates(entry.projectPath, entry.iid, {
+            startDate: entry.startDate,
+            dueDate: entry.dueDate,
+          });
           succeeded += 1;
         } catch (error) {
           failures.push(

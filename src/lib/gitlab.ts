@@ -294,23 +294,75 @@ export class GitLabClient {
   async updateIssueDates(
     projectPath: string,
     iid: string,
-    updates: { dueDate?: string | null }
+    updates: { startDate?: string | null; dueDate?: string | null }
   ): Promise<void> {
-    const params = new URLSearchParams();
-    if (updates.dueDate !== undefined) {
-      params.set('due_date', updates.dueDate ?? '');
-    }
-    if (params.toString() === '') return;
+    const body: Record<string, string> = {};
+    if (updates.dueDate !== undefined) body.due_date = updates.dueDate ?? '';
+    if (updates.startDate !== undefined) body.start_date = updates.startDate ?? '';
+    if (Object.keys(body).length === 0) return;
 
     const res = await fetch(
-      `${this.instanceOrigin}/api/v4/projects/${encodeURIComponent(projectPath)}/issues/${iid}?${params.toString()}`,
+      `${this.instanceOrigin}/api/v4/projects/${encodeURIComponent(projectPath)}/issues/${iid}`,
       {
         method: 'PUT',
-        headers: { Authorization: `Bearer ${this.token}` },
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
       }
     );
     if (!res.ok) {
-      throw new Error(`GitLab PUT ${res.status}: ${res.statusText} for ${projectPath}#${iid}`);
+      const text = await res.text().catch(() => '');
+      throw new Error(
+        `GitLab PUT ${res.status}: ${res.statusText} for ${projectPath}#${iid}${text ? ` — ${text}` : ''}`
+      );
+    }
+
+    if (updates.startDate !== undefined) {
+      await this.updateIssueStartDateViaGraphQL(projectPath, iid, updates.startDate);
+    }
+  }
+
+  private async updateIssueStartDateViaGraphQL(
+    projectPath: string,
+    iid: string,
+    startDate: string | null
+  ): Promise<void> {
+    const lookup = `
+      query IssueWorkItemId($fullPath: ID!, $iid: String!) {
+        project(fullPath: $fullPath) {
+          issue(iid: $iid) { id }
+        }
+      }
+    `;
+    type LookupResp = { project: { issue: { id: string } | null } | null };
+
+    let data: LookupResp;
+    try {
+      data = await this.graphql<LookupResp>(lookup, { fullPath: projectPath, iid });
+    } catch {
+      return;
+    }
+    const workItemId = data.project?.issue?.id;
+    if (!workItemId) return;
+
+    const mutation = `
+      mutation SetStart($input: WorkItemUpdateInput!) {
+        workItemUpdate(input: $input) {
+          errors
+        }
+      }
+    `;
+    type MutationResp = { workItemUpdate: { errors: string[] } };
+    const input = {
+      id: workItemId,
+      startAndDueDateWidget: { startDate: startDate ?? null },
+    };
+    try {
+      await this.graphql<MutationResp>(mutation, { input });
+    } catch {
+      // Ignore — some GitLab versions/editions don't expose this widget.
     }
   }
 
