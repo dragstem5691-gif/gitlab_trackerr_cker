@@ -15,8 +15,6 @@ import {
   Copy,
   Download,
   GripHorizontal,
-  FileDown,
-  FileUp,
   ListPlus,
   Maximize2,
   Minimize2,
@@ -33,7 +31,6 @@ import {
 } from 'lucide-react';
 import { usePlanHistory, isEditableTarget } from '../lib/usePlanHistory';
 import { buildPngFilename, exportElementToPng } from '../lib/exportPng';
-import { parsePlanFromYaml, serializePlanToYaml } from '../lib/planYaml';
 import type { ReportResult } from '../types';
 import {
   GitLabClient,
@@ -402,56 +399,7 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
   ).length;
   const timelineWidth = dates.length * DAY_WIDTH;
 
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pushingToGitLab, setPushingToGitLab] = useState(false);
-
-  const handleExportYaml = useCallback(() => {
-    const yaml = serializePlanToYaml(plan, {
-      projectPath: context.projectPath,
-      periodStart: context.period.start,
-      periodEnd: context.period.end,
-    });
-    const blob = new Blob([yaml], { type: 'application/x-yaml;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    const safeProject = (context.projectPath || 'plan').replace(/[^a-z0-9_-]+/gi, '-');
-    anchor.download = `${safeProject}-${context.period.start}_${context.period.end}.gantt.yaml`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
-    showToast('YAML exported');
-  }, [context.period.end, context.period.start, context.projectPath, plan, showToast]);
-
-  const handleImportYamlClick = useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
-
-  const handleImportYamlFile = useCallback(
-    async (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      event.target.value = '';
-      if (!file) return;
-      try {
-        const text = await file.text();
-        const { plan: imported } = parsePlanFromYaml(text);
-        if (
-          !window.confirm(
-            `Replace current plan with "${file.name}"? ${imported.tasks.length} task(s), ${imported.people.length} people will be imported.`
-          )
-        ) {
-          return;
-        }
-        resetPlanHistory(imported);
-        setSavedPlanJson(JSON.stringify(imported));
-        showToast('YAML imported');
-      } catch (error) {
-        window.alert(`Import failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    },
-    [resetPlanHistory, showToast]
-  );
 
   const handlePushToGitLab = useCallback(async () => {
     if (!gitLabConfig) {
@@ -961,33 +909,6 @@ export function GanttBuilderView({ report, gitLabConfig, onBack }: Props) {
               <Save className="h-4 w-4" />
               Save local plan
             </button>
-            <div className="inline-flex rounded-lg border border-white/15 bg-white/10 p-0.5">
-              <button
-                type="button"
-                onClick={handleExportYaml}
-                title="Export plan as YAML"
-                className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10"
-              >
-                <FileDown className="h-3.5 w-3.5" />
-                Export YAML
-              </button>
-              <button
-                type="button"
-                onClick={handleImportYamlClick}
-                title="Import plan from YAML"
-                className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10"
-              >
-                <FileUp className="h-3.5 w-3.5" />
-                Import YAML
-              </button>
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".yaml,.yml,text/yaml,application/x-yaml"
-              className="hidden"
-              onChange={handleImportYamlFile}
-            />
             {gitLabConfig && (
               <button
                 type="button"

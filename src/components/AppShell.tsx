@@ -5,8 +5,10 @@ import {
   ChevronRight,
   Clock4,
   Command,
+  Download,
   KanbanSquare,
   ShieldCheck,
+  Upload,
   Wifi,
   WifiOff,
 } from 'lucide-react';
@@ -22,6 +24,8 @@ interface Props {
   gitLabLabel: string;
   onOpenConnection: () => void;
   onOpenCommandPalette: () => void;
+  onExportWorkspace: () => void;
+  onImportWorkspace: () => void;
   children: ReactNode;
 }
 
@@ -45,6 +49,8 @@ export function AppShell({
   gitLabLabel,
   onOpenConnection,
   onOpenCommandPalette,
+  onExportWorkspace,
+  onImportWorkspace,
   children,
 }: Props) {
   useEffect(() => {
@@ -141,6 +147,24 @@ export function AppShell({
           </nav>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onExportWorkspace}
+              title="Export workspace (report, planning, Gantt plans)"
+              className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-[11px] font-semibold text-slate-600 hover:text-slate-900 hover:border-slate-300 transition"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Export
+            </button>
+            <button
+              type="button"
+              onClick={onImportWorkspace}
+              title="Import workspace"
+              className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-[11px] font-semibold text-slate-600 hover:text-slate-900 hover:border-slate-300 transition"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              Import
+            </button>
             <button
               type="button"
               onClick={onOpenCommandPalette}

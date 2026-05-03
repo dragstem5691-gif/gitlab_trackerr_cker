@@ -18,6 +18,12 @@ import {
   type PlanningAssignments,
 } from './lib/planning';
 import { parseInstanceOrigin, parseProjectPath } from './lib/time';
+import {
+  applyGanttBuilderPlans,
+  captureWorkspace,
+  downloadWorkspaceFile,
+  parseWorkspace,
+} from './lib/workspace';
 import type { AppPage } from './lib/navigation';
 import type { FilterFormValues, ReportResult } from './types';
 
@@ -325,6 +331,47 @@ function App() {
 
   const hasLogs = logEntries.length > 0 || loading;
 
+  const handleExportWorkspace = () => {
+    const snapshot = captureWorkspace({
+      form: formSnapshot,
+      report,
+      planningAssignments,
+    });
+    downloadWorkspaceFile(snapshot);
+  };
+
+  const handleImportWorkspace = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const snapshot = parseWorkspace(text);
+        const preservedToken = formSnapshot.token;
+        const mergedForm: FilterFormValues = {
+          ...formSnapshot,
+          ...(snapshot.form ?? {}),
+          token: preservedToken,
+        };
+        setFormSnapshot(mergedForm);
+        applyGanttBuilderPlans(snapshot.ganttBuilderPlans ?? {});
+        setReport(snapshot.report ?? null);
+        setPlanningAssignments(snapshot.planningAssignments ?? {});
+        setError(null);
+        setIsDemo(false);
+        setPage(snapshot.report ? 'report' : 'ganttBuilder');
+        window.setTimeout(() => window.location.reload(), 50);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to import workspace.';
+        setError(message);
+      }
+    };
+    input.click();
+  };
+
   return (
     <AppShell
       page={page}
@@ -339,6 +386,8 @@ function App() {
         setConnectionOpen(true);
       }}
       onOpenCommandPalette={() => setPaletteOpen(true)}
+      onExportWorkspace={handleExportWorkspace}
+      onImportWorkspace={handleImportWorkspace}
     >
       <main
         className={`mx-auto px-4 py-6 sm:px-6 ${
