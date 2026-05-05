@@ -11,7 +11,7 @@ function needsQuote(value: string) {
   if (value === '') return true;
   if (/^(true|false|null|yes|no|on|off)$/i.test(value)) return true;
   if (/^-?\d+(\.\d+)?$/.test(value)) return true;
-  if (/[:#\-?&*!|>'"`%@,\[\]{}\n\r\t]/.test(value)) return true;
+  if (/[-:#?&*!|>'"`%@,[\]{}\n\r\t]/.test(value)) return true;
   if (/^\s|\s$/.test(value)) return true;
   return false;
 }

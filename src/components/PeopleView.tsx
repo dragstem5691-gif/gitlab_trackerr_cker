@@ -1,23 +1,48 @@
 import { useState } from 'react';
 import {
+  AlertTriangle,
   CalendarClock,
   ChevronDown,
   ChevronRight,
+  Download,
   ExternalLink,
   Inbox,
   Trophy,
 } from 'lucide-react';
 import type { PersonAggregation } from '../types';
+import { downloadPeopleWorkbook } from '../lib/peopleExport';
 import { formatHours } from '../lib/time';
 
 interface Props {
   people: PersonAggregation[];
   grandTotalSecondsInPeriod: number;
+  projectPath: string;
+  period: { start: string; end: string };
 }
 
-export function PeopleView({ people, grandTotalSecondsInPeriod }: Props) {
+export function PeopleView({ people, grandTotalSecondsInPeriod, projectPath, period }: Props) {
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const ranked = people.filter((person) => person.secondsInPeriod > 0);
   const zeroInPeriod = people.filter((person) => person.secondsInPeriod === 0);
+
+  const handleExport = async () => {
+    setExportError(null);
+    setExporting(true);
+
+    try {
+      await downloadPeopleWorkbook({
+        people: ranked,
+        grandTotalSecondsInPeriod,
+        projectPath,
+        period,
+      });
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : 'Failed to export people hours');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   if (ranked.length === 0 && zeroInPeriod.length === 0) {
     return (
@@ -36,13 +61,35 @@ export function PeopleView({ people, grandTotalSecondsInPeriod }: Props) {
   return (
     <div className="space-y-4">
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-        <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-          <Trophy className="w-4 h-4 text-amber-500" />
-          People ranking (by selected period)
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+              <Trophy className="w-4 h-4 text-amber-500" />
+              People ranking (by selected period)
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Hours are aggregated across every PM cluster and standalone item in the report.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={exporting || ranked.length === 0}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-3.5 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Download className="h-4 w-4" />
+            {exporting ? 'Preparing XLSX...' : 'Export XLSX'}
+          </button>
         </div>
-        <p className="mt-1 text-xs text-slate-500">
-          Hours are aggregated across every PM cluster and standalone item in the report.
-        </p>
+
+        {exportError && (
+          <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
+            <div className="flex items-start gap-2 text-sm text-rose-900">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-700" />
+              <span>{exportError}</span>
+            </div>
+          </div>
+        )}
 
         <ul className="mt-5 space-y-3">
           {ranked.map((person, index) => (

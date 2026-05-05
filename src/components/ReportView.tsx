@@ -264,6 +264,8 @@ export function ReportView({ report, onReset, onBuildPlanning, onOpenGanttBuilde
         <PeopleView
           people={report.people}
           grandTotalSecondsInPeriod={report.grandTotal.secondsInPeriod}
+          projectPath={report.projectPath}
+          period={report.period}
         />
       )}
 
