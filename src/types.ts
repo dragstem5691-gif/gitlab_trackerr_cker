@@ -116,12 +116,27 @@ export interface ReportResult {
   warnings: string[];
   period: { start: string; end: string };
   projectPath: string;
+  pmProjectPaths: string[];
+}
+
+export interface GitLabGroupScope {
+  id: string;
+  name: string;
+  fullPath: string;
+  webUrl?: string;
+}
+
+export interface GitLabProjectScope {
+  id: string;
+  name: string;
+  fullPath: string;
 }
 
 export interface FilterFormValues {
   instanceUrl: string;
   token: string;
   projectPath: string;
+  subgroupPmProjectPaths: Record<string, string>;
   startDate: string;
   endDate: string;
 }

@@ -1,4 +1,4 @@
-import type { RawIssue, TimeEntry } from '../types';
+import type { GitLabGroupScope, GitLabProjectScope, RawIssue, TimeEntry } from '../types';
 import type { BuildLogger } from './logger';
 
 interface GraphQLResponse<T> {
@@ -54,6 +54,13 @@ interface RestProject {
   id: number;
   name: string;
   path_with_namespace: string;
+}
+
+interface RestGroup {
+  id: number;
+  name: string;
+  full_path: string;
+  web_url?: string;
 }
 
 interface RestIssue {
@@ -397,6 +404,72 @@ export class GitLabClient {
 
     logger?.warn(`Milestones are not available for ${scopePath}`);
     return [];
+  }
+
+  async fetchDescendantGroups(
+    groupPath: string,
+    logger?: BuildLogger
+  ): Promise<GitLabGroupScope[]> {
+    logger?.phase(`Checking GitLab subgroups in ${groupPath}`);
+
+    const [descendants, directSubgroups] = await Promise.all([
+      this.tryFetchAllRestPages<RestGroup>(
+        `/groups/${encodeURIComponent(groupPath)}/descendant_groups?per_page=100`,
+        logger
+      ),
+      this.tryFetchAllRestPages<RestGroup>(
+        `/groups/${encodeURIComponent(groupPath)}/subgroups?per_page=100`,
+        logger
+      ),
+    ]);
+
+    if (!descendants && !directSubgroups) {
+      logger?.info(`${groupPath} is not accessible as a GitLab group, skipping subgroup lookup`);
+      return [];
+    }
+
+    const groupsByPath = new Map<string, RestGroup>();
+    for (const group of [...(descendants ?? []), ...(directSubgroups ?? [])]) {
+      groupsByPath.set(group.full_path, group);
+    }
+
+    const subgroups = Array.from(groupsByPath.values())
+      .map(toGroupScope)
+      .sort((left, right) => left.fullPath.localeCompare(right.fullPath));
+
+    if (subgroups.length > 0) {
+      logger?.success(`Found ${subgroups.length} subgroup(s) under ${groupPath}`);
+    } else {
+      logger?.info(`No subgroups found under ${groupPath}`);
+    }
+
+    return subgroups;
+  }
+
+  async fetchGroupProjects(
+    groupPath: string,
+    logger?: BuildLogger
+  ): Promise<GitLabProjectScope[]> {
+    logger?.phase(`Checking GitLab projects in ${groupPath}`);
+
+    const projects = await this.tryFetchAllRestPages<RestProject>(
+      `/groups/${encodeURIComponent(groupPath)}/projects?include_subgroups=true&simple=true&per_page=100`,
+      logger
+    );
+    if (!projects) {
+      logger?.info(`${groupPath} is not accessible as a GitLab group, skipping project discovery`);
+      return [];
+    }
+
+    const projectScopes = projects
+      .map(toProjectScope)
+      .sort((left, right) => left.fullPath.localeCompare(right.fullPath));
+
+    logger?.success(
+      `Found ${projectScopes.length} project(s) under ${groupPath} including subgroups`
+    );
+
+    return projectScopes;
   }
 
   async fetchGanttIssuesFromScope(
@@ -957,6 +1030,23 @@ function toGanttMilestone(milestone: RestMilestone): GitLabGanttMilestone {
   };
 }
 
+function toGroupScope(group: RestGroup): GitLabGroupScope {
+  return {
+    id: String(group.id),
+    name: group.name,
+    fullPath: group.full_path,
+    webUrl: group.web_url,
+  };
+}
+
+function toProjectScope(project: RestProject): GitLabProjectScope {
+  return {
+    id: String(project.id),
+    name: project.name,
+    fullPath: project.path_with_namespace,
+  };
+}
+
 function dedupeRestIssues(issues: RestIssue[]) {
   const byProjectIssue = new Map<string, RestIssue>();
   for (const issue of issues) {
@@ -1004,7 +1094,8 @@ export async function loadReportData(
   projectPath: string,
   startDate: string,
   endDate: string,
-  logger?: BuildLogger
+  logger?: BuildLogger,
+  activityProjectPaths: string[] = []
 ): Promise<LoadReportDataResult> {
   logger?.phase(`Starting data collection from project ${projectPath}`, {
     strategy: 'activity-first',
@@ -1061,7 +1152,7 @@ export async function loadReportData(
   }
 
   const projectPathsForActivity = Array.from(
-    new Set([projectPath, ...Array.from(linkedRefsByProject.keys())])
+    new Set([projectPath, ...Array.from(linkedRefsByProject.keys()), ...activityProjectPaths])
   );
 
   logger?.success(
@@ -1266,5 +1357,75 @@ export async function loadReportData(
   return {
     issues: Array.from(finalIssuesById.values()),
     warnings,
+  };
+}
+
+export async function loadReportDataForPmProjects(
+  client: GitLabClient,
+  pmProjectPaths: string[],
+  startDate: string,
+  endDate: string,
+  logger?: BuildLogger,
+  activityProjectPaths: string[] = []
+): Promise<LoadReportDataResult> {
+  const uniqueProjectPaths = Array.from(
+    new Set(pmProjectPaths.map((projectPath) => projectPath.trim()).filter(Boolean))
+  );
+  const uniqueActivityProjectPaths = Array.from(
+    new Set(activityProjectPaths.map((projectPath) => projectPath.trim()).filter(Boolean))
+  );
+
+  if (uniqueProjectPaths.length === 0) {
+    return { issues: [], warnings: ['No PM project paths were provided.'] };
+  }
+  if (uniqueProjectPaths.length === 1) {
+    return loadReportData(
+      client,
+      uniqueProjectPaths[0],
+      startDate,
+      endDate,
+      logger,
+      uniqueActivityProjectPaths
+    );
+  }
+
+  logger?.phase('Starting data collection from multiple PM boards', {
+    boards: uniqueProjectPaths.length,
+  });
+
+  const issuesById = new Map<string, RawIssue>();
+  const warnings = new Set<string>();
+
+  for (const [index, projectPath] of uniqueProjectPaths.entries()) {
+    logger?.phase(`Collecting PM board ${index + 1}/${uniqueProjectPaths.length}: ${projectPath}`);
+    const result = await loadReportData(
+      client,
+      projectPath,
+      startDate,
+      endDate,
+      logger,
+      index === 0 ? uniqueActivityProjectPaths : []
+    );
+
+    for (const issue of result.issues) {
+      const existing = issuesById.get(issue.id);
+      issuesById.set(issue.id, existing ? mergeIssueData(existing, issue) : issue);
+    }
+    for (const warning of result.warnings) {
+      warnings.add(`${projectPath}: ${warning}`);
+    }
+
+    logger?.success(
+      `PM board ${index + 1}/${uniqueProjectPaths.length}: merged ${result.issues.length} issue(s)`
+    );
+  }
+
+  logger?.success(
+    `Multi-board data collection complete: ${issuesById.size} unique issue(s) from ${uniqueProjectPaths.length} PM board(s)`
+  );
+
+  return {
+    issues: Array.from(issuesById.values()),
+    warnings: Array.from(warnings),
   };
 }

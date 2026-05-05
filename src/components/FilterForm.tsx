@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Calendar, FolderGit2, KeyRound, Loader2, Play, Server, Sparkles } from 'lucide-react';
-import type { FilterFormValues } from '../types';
+import type { FilterFormValues, GitLabGroupScope } from '../types';
 
 interface Props {
   initialValues: FilterFormValues;
@@ -8,22 +8,49 @@ interface Props {
   onSubmit: (values: FilterFormValues) => void;
   onDemo: () => void;
   error: string | null;
+  discoveredSubgroups?: GitLabGroupScope[];
 }
 
-export function FilterForm({ initialValues, isLoading, onSubmit, onDemo, error }: Props) {
-  const [values, setValues] = useState<FilterFormValues>(initialValues);
+export function FilterForm({
+  initialValues,
+  isLoading,
+  onSubmit,
+  onDemo,
+  error,
+  discoveredSubgroups = [],
+}: Props) {
+  const [values, setValues] = useState<FilterFormValues>(() => normalizeValues(initialValues));
   const [touched, setTouched] = useState(false);
+
+  useEffect(() => {
+    setValues(normalizeValues(initialValues));
+  }, [initialValues]);
+
+  const subgroupPmProjectPaths = values.subgroupPmProjectPaths ?? {};
+  const hasRequiredSubgroupPmBoards = discoveredSubgroups.every((subgroup) =>
+    subgroupPmProjectPaths[subgroup.fullPath]?.trim()
+  );
 
   const isValid =
     values.instanceUrl.trim() &&
     values.token.trim() &&
     values.projectPath.trim() &&
+    hasRequiredSubgroupPmBoards &&
     values.startDate &&
     values.endDate &&
     values.startDate <= values.endDate;
 
-  const update = (k: keyof FilterFormValues, v: string) =>
+  const update = (k: keyof Omit<FilterFormValues, 'subgroupPmProjectPaths'>, v: string) =>
     setValues((prev) => ({ ...prev, [k]: v }));
+
+  const updateSubgroupPmProject = (subgroupPath: string, v: string) =>
+    setValues((prev) => ({
+      ...prev,
+      subgroupPmProjectPaths: {
+        ...(prev.subgroupPmProjectPaths ?? {}),
+        [subgroupPath]: v,
+      },
+    }));
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,7 +82,7 @@ export function FilterForm({ initialValues, isLoading, onSubmit, onDemo, error }
         <Field
           label="Main project/group URL"
           icon={<Server className="w-4 h-4" />}
-          hint="Link to the main GitLab project or group that contains all boards: PM, backend, frontend, and others, e.g. https://gitlab.example.com/crypto_payments/bps/"
+          hint="Link to the main GitLab group that contains all projects and subgroups. All projects under this group are scanned for period hours."
         >
           <input
             type="text"
@@ -100,6 +127,40 @@ export function FilterForm({ initialValues, isLoading, onSubmit, onDemo, error }
             )}`}
           />
         </Field>
+
+        {discoveredSubgroups.length > 0 && (
+          <div className="md:col-span-2 border-t border-slate-100 pt-5">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+              <FolderGit2 className="w-4 h-4 text-sky-700" />
+              PM projects in subgroups
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              The selected GitLab group contains subgroups. Enter the PM board project for each
+              subgroup so their hours are included in one report.
+            </p>
+            <div className="mt-4 grid grid-cols-1 gap-4">
+              {discoveredSubgroups.map((subgroup) => (
+                <Field
+                  key={subgroup.id}
+                  label={subgroup.fullPath}
+                  hint={`PM board project inside ${subgroup.fullPath}`}
+                >
+                  <input
+                    type="text"
+                    value={subgroupPmProjectPaths[subgroup.fullPath] ?? ''}
+                    onChange={(e) =>
+                      updateSubgroupPmProject(subgroup.fullPath, e.target.value)
+                    }
+                    placeholder={`https://gitlab.example.com/${subgroup.fullPath}/project-pm`}
+                    className={`w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-white text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-200 focus:border-sky-400 transition ${fieldError(
+                      !subgroupPmProjectPaths[subgroup.fullPath]?.trim()
+                    )}`}
+                  />
+                </Field>
+              ))}
+            </div>
+          </div>
+        )}
 
         <Field label="Start date" icon={<Calendar className="w-4 h-4" />}>
           <input
@@ -159,6 +220,13 @@ export function FilterForm({ initialValues, isLoading, onSubmit, onDemo, error }
       </div>
     </form>
   );
+}
+
+function normalizeValues(values: FilterFormValues): FilterFormValues {
+  return {
+    ...values,
+    subgroupPmProjectPaths: values.subgroupPmProjectPaths ?? {},
+  };
 }
 
 function Field({

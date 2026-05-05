@@ -67,6 +67,10 @@ export function PlanningBuilderView({
   const unmappedSeconds = Math.max(0, report.grandTotal.secondsInPeriod - mappedSeconds);
   const topLevelRows = planningRows.filter((row) => row.depth === 0).length;
   const assignedBoardRoleSlots = Object.values(roleCounts).reduce((total, count) => total + count, 0);
+  const reportScopeLabel =
+    (report.pmProjectPaths?.length ?? 1) > 1
+      ? `${report.pmProjectPaths.length} PM boards`
+      : report.projectPath;
 
   const handleRoleChange = (boardId: string, userId: string, nextRole: ProjectRole | null) => {
     setError(null);
@@ -113,7 +117,9 @@ export function PlanningBuilderView({
                 one workbook.
               </p>
               <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
-                <span>{report.projectPath}</span>
+                <span title={(report.pmProjectPaths ?? [report.projectPath]).join(', ')}>
+                  {reportScopeLabel}
+                </span>
                 <span>
                   {report.period.start} - {report.period.end}
                 </span>

@@ -34,6 +34,10 @@ export function ReportView({ report, onReset, onBuildPlanning, onOpenGanttBuilde
   const [mode, setMode] = useState<ViewMode>('trees');
   const isEmpty = report.pmTrees.length === 0 && report.standalone.length === 0;
   const boards = buildPlanningBoards(report);
+  const reportScopeLabel =
+    (report.pmProjectPaths?.length ?? 1) > 1
+      ? `${report.pmProjectPaths.length} PM boards`
+      : report.projectPath;
 
   return (
     <div className="space-y-6">
@@ -48,7 +52,9 @@ export function ReportView({ report, onReset, onBuildPlanning, onOpenGanttBuilde
               <div className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
                 <span className="inline-flex items-center gap-1">
                   <FolderGit2 className="w-3.5 h-3.5" />
-                  {report.projectPath}
+                  <span title={(report.pmProjectPaths ?? [report.projectPath]).join(', ')}>
+                    {reportScopeLabel}
+                  </span>
                 </span>
                 <span className="inline-flex items-center gap-1">
                   <CalendarDays className="w-3.5 h-3.5" />
@@ -264,7 +270,7 @@ export function ReportView({ report, onReset, onBuildPlanning, onOpenGanttBuilde
         <PeopleView
           people={report.people}
           grandTotalSecondsInPeriod={report.grandTotal.secondsInPeriod}
-          projectPath={report.projectPath}
+          projectPath={reportScopeLabel}
           period={report.period}
         />
       )}

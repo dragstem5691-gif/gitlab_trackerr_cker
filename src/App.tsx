@@ -8,7 +8,7 @@ import { GanttBuilderView } from './components/GanttBuilderView';
 import { AppShell } from './components/AppShell';
 import { CommandPalette, type CommandAction } from './components/CommandPalette';
 import { ActivityDrawer } from './components/ActivityDrawer';
-import { GitLabClient, loadReportData } from './lib/gitlab';
+import { GitLabClient, loadReportDataForPmProjects } from './lib/gitlab';
 import { buildReport } from './lib/aggregation';
 import { BuildLogger, type LogEntry } from './lib/logger';
 import { DEMO_ISSUES, DEMO_PROJECT_PATH } from './lib/demoData';
@@ -25,7 +25,7 @@ import {
   parseWorkspace,
 } from './lib/workspace';
 import type { AppPage } from './lib/navigation';
-import type { FilterFormValues, ReportResult } from './types';
+import type { FilterFormValues, GitLabGroupScope, ReportResult } from './types';
 
 const SESSION_KEY_FORM = 'gtr.form';
 const SESSION_KEY_TOKEN = 'gtr.token';
@@ -35,6 +35,7 @@ function loadInitialValues(): FilterFormValues {
     instanceUrl: 'https://gitlab.com',
     token: '',
     projectPath: '',
+    subgroupPmProjectPaths: {},
     startDate: '2026-04-01',
     endDate: '2026-04-05',
   };
@@ -53,6 +54,11 @@ function loadInitialValues(): FilterFormValues {
   return defaultValues;
 }
 
+function getReportScopeLabel(report: ReportResult) {
+  const pmBoardCount = report.pmProjectPaths?.length ?? 1;
+  return pmBoardCount > 1 ? `${pmBoardCount} PM boards` : report.projectPath;
+}
+
 function App() {
   const initial = useMemo(loadInitialValues, []);
   const [report, setReport] = useState<ReportResult | null>(null);
@@ -60,6 +66,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formSnapshot, setFormSnapshot] = useState<FilterFormValues>(initial);
+  const [discoveredSubgroups, setDiscoveredSubgroups] = useState<GitLabGroupScope[]>([]);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [planningAssignments, setPlanningAssignments] = useState<PlanningAssignments>({});
   const [connectionOpen, setConnectionOpen] = useState(false);
@@ -152,6 +159,7 @@ function App() {
       logger.info(`Period: ${values.startDate} - ${values.endDate}`);
 
       const origin = parseInstanceOrigin(values.instanceUrl);
+      const mainScopePath = parseProjectPath(values.instanceUrl);
       const projectPath = parseProjectPath(values.projectPath);
       if (!origin) throw new Error('Invalid GitLab instance URL');
       if (!projectPath) throw new Error('Invalid project URL or path');
@@ -160,18 +168,66 @@ function App() {
       logger.success(`Resolved project path: ${projectPath}`);
 
       const client = new GitLabClient(origin, values.token);
-      const data = await loadReportData(
+      const [nextDiscoveredSubgroups, discoveredProjects] = mainScopePath
+        ? await Promise.all([
+            client.fetchDescendantGroups(mainScopePath, logger),
+            client.fetchGroupProjects(mainScopePath, logger),
+          ])
+        : [[], []];
+      setDiscoveredSubgroups(nextDiscoveredSubgroups);
+
+      const subgroupPmProjectPaths = values.subgroupPmProjectPaths ?? {};
+      const missingSubgroupPmBoards = nextDiscoveredSubgroups.filter(
+        (subgroup) => !parseProjectPath(subgroupPmProjectPaths[subgroup.fullPath] ?? '')
+      );
+
+      if (missingSubgroupPmBoards.length > 0) {
+        logger.warn(
+          `Found ${nextDiscoveredSubgroups.length} subgroup(s). PM board paths are required before collection can continue.`
+        );
+        setFormSnapshot({
+          ...values,
+          subgroupPmProjectPaths: {
+            ...Object.fromEntries(
+              nextDiscoveredSubgroups.map((subgroup) => [
+                subgroup.fullPath,
+                subgroupPmProjectPaths[subgroup.fullPath] ?? '',
+              ])
+            ),
+            ...subgroupPmProjectPaths,
+          },
+        });
+        setError(
+          `Found ${nextDiscoveredSubgroups.length} subgroup(s). Enter PM project paths for each subgroup and run the report again.`
+        );
+        return;
+      }
+
+      const subgroupPmProjects = nextDiscoveredSubgroups
+        .map((subgroup) => parseProjectPath(subgroupPmProjectPaths[subgroup.fullPath] ?? ''))
+        .filter((value): value is string => Boolean(value));
+      const pmProjectPaths = Array.from(new Set([projectPath, ...subgroupPmProjects]));
+      const activityProjectPaths = Array.from(
+        new Set(discoveredProjects.map((project) => project.fullPath))
+      );
+
+      logger.success(
+        `Resolved ${pmProjectPaths.length} PM board path(s) and ${activityProjectPaths.length} project(s) for activity collection`
+      );
+
+      const data = await loadReportDataForPmProjects(
         client,
-        projectPath,
+        pmProjectPaths,
         values.startDate,
         values.endDate,
-        logger
+        logger,
+        activityProjectPaths
       );
       logger.success(`Fetched ${data.issues.length} total issues from PM clusters and branches`);
 
       const result = buildReport(
         data.issues,
-        projectPath,
+        pmProjectPaths,
         values.startDate,
         values.endDate,
         data.warnings,
@@ -202,9 +258,11 @@ function App() {
     const demoValues: FilterFormValues = {
       ...formSnapshot,
       projectPath: `https://gitlab.example.com/${DEMO_PROJECT_PATH}`,
+      subgroupPmProjectPaths: {},
       startDate: '2026-04-01',
       endDate: '2026-04-05',
     };
+    setDiscoveredSubgroups([]);
     setFormSnapshot(demoValues);
     setError(null);
     setPage('report');
@@ -242,6 +300,7 @@ function App() {
     setLogEntries([]);
     setPlanningAssignments({});
     setIsDemo(false);
+    setDiscoveredSubgroups([]);
     setConnectionOpen(true);
   };
 
@@ -263,7 +322,7 @@ function App() {
   const gitLabLabel = isDemo
     ? 'Demo dataset'
     : report
-    ? report.projectPath
+    ? getReportScopeLabel(report)
     : formSnapshot.projectPath
     ? 'Not synced'
     : 'Not connected';
@@ -273,7 +332,7 @@ function App() {
     if (page === 'report') crumbs.push('Report');
     if (page === 'planning') crumbs.push('Report', 'Planning');
     if (page === 'ganttBuilder') crumbs.push('Gantt Builder');
-    if (report && page !== 'ganttBuilder') crumbs.push(report.projectPath);
+    if (report && page !== 'ganttBuilder') crumbs.push(getReportScopeLabel(report));
     return crumbs;
   }, [page, report]);
 
@@ -351,12 +410,18 @@ function App() {
         const text = await file.text();
         const snapshot = parseWorkspace(text);
         const preservedToken = formSnapshot.token;
+        const importedForm = snapshot.form ?? {};
         const mergedForm: FilterFormValues = {
           ...formSnapshot,
-          ...(snapshot.form ?? {}),
+          ...importedForm,
           token: preservedToken,
+          subgroupPmProjectPaths: {
+            ...formSnapshot.subgroupPmProjectPaths,
+            ...(importedForm.subgroupPmProjectPaths ?? {}),
+          },
         };
         setFormSnapshot(mergedForm);
+        setDiscoveredSubgroups([]);
         applyGanttBuilderPlans(snapshot.ganttBuilderPlans ?? {});
         setReport(snapshot.report ?? null);
         setPlanningAssignments(snapshot.planningAssignments ?? {});
@@ -409,6 +474,7 @@ function App() {
             onDemo={handleDemo}
             isLoading={loading}
             error={error}
+            discoveredSubgroups={discoveredSubgroups}
           />
         )}
 

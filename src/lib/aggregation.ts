@@ -24,15 +24,20 @@ interface PmComponent {
 
 export function buildReport(
   issues: RawIssue[],
-  projectPath: string,
+  projectPath: string | string[],
   startDate: string,
   endDate: string,
   warnings: string[] = [],
   logger?: BuildLogger
 ): ReportResult {
+  const pmProjectPaths = Array.from(
+    new Set((Array.isArray(projectPath) ? projectPath : [projectPath]).filter(Boolean))
+  );
+  const primaryProjectPath = pmProjectPaths[0] ?? '';
+
   logger?.phase('Starting aggregation', {
     totalIssues: issues.length,
-    projectPath,
+    projectPath: pmProjectPaths.join(', '),
     period: `${startDate} - ${endDate}`,
   });
 
@@ -42,11 +47,12 @@ export function buildReport(
   }
   logger?.info(`Precomputed summaries for ${summaries.size} issues`);
 
-  const pmIssues = issues.filter((issue) => issue.projectPath === projectPath);
+  const pmProjectPathSet = new Set(pmProjectPaths);
+  const pmIssues = issues.filter((issue) => pmProjectPathSet.has(issue.projectPath));
   const pmIssueIds = new Set(pmIssues.map((issue) => issue.id));
   const pmComponents = buildPmComponents(pmIssues, pmIssueIds);
   logger?.info(
-    `Resolved ${pmComponents.length} PM cluster(s) from ${pmIssues.length} issue(s) in ${projectPath}`
+    `Resolved ${pmComponents.length} PM cluster(s) from ${pmIssues.length} issue(s) in ${pmProjectPaths.length} PM board(s)`
   );
 
   const parentsByChild = buildParentsByChild(pmIssues, pmIssueIds);
@@ -178,7 +184,8 @@ export function buildReport(
     },
     warnings,
     period: { start: startDate, end: endDate },
-    projectPath,
+    projectPath: primaryProjectPath,
+    pmProjectPaths,
   };
 }
 
