@@ -13,6 +13,7 @@ export interface TimeEntry {
   userAvatarUrl?: string;
   timeSpentSeconds: number;
   spentAt: string;
+  summary?: string;
 }
 
 export interface RawIssue {
@@ -94,6 +95,7 @@ export interface PersonAggregation {
       id: string;
       spentAt: string;
       seconds: number;
+      summary?: string;
     }[];
   }[];
 }

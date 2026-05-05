@@ -65,7 +65,7 @@ function populatePersonSheet(
 }
 
 function setColumnWidths(sheet: Worksheet) {
-  const widths = [18, 22, 12, 54, 16, 18, 42];
+  const widths = [18, 42, 22, 12, 54, 16, 18, 42];
 
   widths.forEach((width, index) => {
     sheet.getColumn(index + 1).width = width;
@@ -77,7 +77,7 @@ function populateSummary(
   person: PersonAggregation,
   input: PeopleWorkbookInput
 ) {
-  sheet.mergeCells(1, 1, 1, 7);
+  sheet.mergeCells(1, 1, 1, 8);
 
   const titleCell = sheet.getCell(1, 1);
   titleCell.value = person.userName;
@@ -125,6 +125,7 @@ function setMetaPair(
 function populateTable(sheet: Worksheet, person: PersonAggregation) {
   const headers = [
     'Spent at',
+    'Comment',
     'Project',
     'Issue',
     'Title',
@@ -159,6 +160,7 @@ function populateTable(sheet: Worksheet, person: PersonAggregation) {
     if (timelogs.length === 0) {
       addDetailRow(sheet, rowNumber, {
         spentAt: '',
+        summary: '',
         projectName: breakdown.projectName,
         issueLabel: `#${breakdown.issueIid}`,
         issueTitle: breakdown.issueTitle,
@@ -174,6 +176,7 @@ function populateTable(sheet: Worksheet, person: PersonAggregation) {
       timelogSecondsTotal += timelog.seconds;
       addDetailRow(sheet, rowNumber, {
         spentAt: formatSpentAt(timelog.spentAt),
+        summary: timelog.summary ?? '',
         projectName: breakdown.projectName,
         issueLabel: `#${breakdown.issueIid}`,
         issueTitle: breakdown.issueTitle,
@@ -187,19 +190,19 @@ function populateTable(sheet: Worksheet, person: PersonAggregation) {
 
   const totalRowNumber = rowNumber;
   const totalRow = sheet.getRow(totalRowNumber);
-  totalRow.getCell(4).value = 'Total';
-  totalRow.getCell(4).font = { bold: true, color: { argb: 'FF0F172A' } };
-  totalRow.getCell(5).value =
-    rowNumber > DETAIL_START_ROW
-      ? {
-          formula: `SUM(E${DETAIL_START_ROW}:E${rowNumber - 1})`,
-          result: secondsToHours(timelogSecondsTotal),
-        }
-      : 0;
+  totalRow.getCell(5).value = 'Total';
+  totalRow.getCell(5).font = { bold: true, color: { argb: 'FF0F172A' } };
   totalRow.getCell(6).value =
     rowNumber > DETAIL_START_ROW
       ? {
           formula: `SUM(F${DETAIL_START_ROW}:F${rowNumber - 1})`,
+          result: secondsToHours(timelogSecondsTotal),
+        }
+      : 0;
+  totalRow.getCell(7).value =
+    rowNumber > DETAIL_START_ROW
+      ? {
+          formula: `SUM(G${DETAIL_START_ROW}:G${rowNumber - 1})`,
           result: secondsToHours(person.secondsInPeriod),
         }
       : secondsToHours(person.secondsInPeriod);
@@ -212,8 +215,8 @@ function populateTable(sheet: Worksheet, person: PersonAggregation) {
     };
     applyBorder(cell);
   });
-  totalRow.getCell(5).numFmt = '0.00';
   totalRow.getCell(6).numFmt = '0.00';
+  totalRow.getCell(7).numFmt = '0.00';
 
   sheet.autoFilter = {
     from: { row: TABLE_HEADER_ROW, column: 1 },
@@ -226,6 +229,7 @@ function addDetailRow(
   rowNumber: number,
   row: {
     spentAt: string;
+    summary: string;
     projectName: string;
     issueLabel: string;
     issueTitle: string;
@@ -237,6 +241,7 @@ function addDetailRow(
   const excelRow = sheet.getRow(rowNumber);
   const values = [
     row.spentAt,
+    row.summary,
     row.projectName,
     row.issueLabel,
     row.issueTitle,
@@ -247,15 +252,15 @@ function addDetailRow(
   values.forEach((value, index) => {
     const cell = excelRow.getCell(index + 1);
     cell.value = value;
-    cell.alignment = { vertical: 'top', wrapText: index === 3 };
+    cell.alignment = { vertical: 'top', wrapText: index === 1 || index === 4 };
     applyBorder(cell);
-    if (index === 4 || index === 5) {
+    if (index === 5 || index === 6) {
       cell.numFmt = '0.00';
       cell.alignment = { vertical: 'top', horizontal: 'right' };
     }
   });
 
-  const linkCell = excelRow.getCell(7);
+  const linkCell = excelRow.getCell(8);
   linkCell.value = row.issueWebUrl
     ? {
         text: row.issueWebUrl,

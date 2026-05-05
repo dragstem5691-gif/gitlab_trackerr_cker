@@ -9,7 +9,8 @@ function entry(
   issueId: string,
   user: { id: string; name: string },
   hours: number,
-  spentAt: string
+  spentAt: string,
+  summary?: string
 ) {
   return {
     id,
@@ -19,6 +20,7 @@ function entry(
     userAvatarUrl: undefined,
     timeSpentSeconds: hours * 3600,
     spentAt,
+    summary,
   };
 }
 
@@ -35,7 +37,7 @@ export const DEMO_ISSUES: RawIssue[] = [
     projectPath: 'group/project-pm',
     totalTimeSpentSeconds: 5 * 3600,
     timelogs: [
-      entry('t-pm101-1', 'gid://gitlab/Issue/PM-101', U3, 2, '2026-04-02T10:00:00+05:00'),
+      entry('t-pm101-1', 'gid://gitlab/Issue/PM-101', U3, 2, '2026-04-02T10:00:00+05:00', 'Prepared PM plan'),
       entry('t-pm101-2', 'gid://gitlab/Issue/PM-101', U3, 3, '2026-04-11T10:00:00+05:00'),
     ],
     linkedIssueIds: [
@@ -67,9 +69,9 @@ export const DEMO_ISSUES: RawIssue[] = [
     projectPath: 'group/project-backend',
     totalTimeSpentSeconds: 20 * 3600,
     timelogs: [
-      entry('t-be-1', 'gid://gitlab/Issue/BE-201', U1, 10, '2026-04-02T09:00:00+05:00'),
+      entry('t-be-1', 'gid://gitlab/Issue/BE-201', U1, 10, '2026-04-02T09:00:00+05:00', 'Implemented backend flow'),
       entry('t-be-2', 'gid://gitlab/Issue/BE-201', U1, 5, '2026-04-11T09:00:00+05:00'),
-      entry('t-be-3', 'gid://gitlab/Issue/BE-201', U2, 5, '2026-04-03T14:00:00+05:00'),
+      entry('t-be-3', 'gid://gitlab/Issue/BE-201', U2, 5, '2026-04-03T14:00:00+05:00', 'Reviewed integration details'),
     ],
     linkedIssueIds: [],
   },
@@ -97,7 +99,7 @@ export const DEMO_ISSUES: RawIssue[] = [
     projectPath: 'group/project-qa',
     totalTimeSpentSeconds: 3 * 3600,
     timelogs: [
-      entry('t-qa-1', 'gid://gitlab/Issue/QA-401', U2, 1, '2026-04-01T00:00:00+05:00'),
+      entry('t-qa-1', 'gid://gitlab/Issue/QA-401', U2, 1, '2026-04-01T00:00:00+05:00', 'Smoke testing'),
       entry('t-qa-2', 'gid://gitlab/Issue/QA-401', U2, 2, '2026-04-05T23:59:00+05:00'),
     ],
     linkedIssueIds: [],

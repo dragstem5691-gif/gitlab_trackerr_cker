@@ -258,9 +258,16 @@ function IssueBreakdownRow({
                   key={timelog.id}
                   className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-xs"
                 >
-                  <div className="min-w-0 flex items-center gap-2 text-slate-600">
-                    <CalendarClock className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                    <span className="truncate">{formatTimelogDate(timelog.spentAt)}</span>
+                  <div className="min-w-0 flex items-start gap-2 text-slate-600">
+                    <CalendarClock className="mt-0.5 h-3.5 w-3.5 text-slate-400 shrink-0" />
+                    <div className="min-w-0">
+                      <div className="truncate">{formatTimelogDate(timelog.spentAt)}</div>
+                      {timelog.summary && (
+                        <div className="mt-0.5 whitespace-pre-wrap break-words text-slate-500">
+                          {timelog.summary}
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <span className="font-semibold tabular-nums text-slate-800">
                     {formatHours(timelog.seconds)}

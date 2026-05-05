@@ -17,6 +17,7 @@ type TimelogNode = {
   id: string;
   timeSpent: number;
   spentAt: string;
+  summary?: string | null;
   user?: TimelogUserNode | null;
 };
 
@@ -704,6 +705,7 @@ export class GitLabClient {
               id
               timeSpent
               spentAt
+              summary
               user { id name username avatarUrl }
               issue {
                 id
@@ -821,6 +823,7 @@ export class GitLabClient {
                 id
                 timeSpent
                 spentAt
+                summary
                 user { id name username avatarUrl }
               }
             }
@@ -901,6 +904,7 @@ export class GitLabClient {
       userAvatarUrl: t.user?.avatarUrl || undefined,
       timeSpentSeconds: t.timeSpent,
       spentAt: t.spentAt,
+      summary: normalizeTimelogSummary(t.summary),
     };
   }
 
@@ -1045,6 +1049,11 @@ function toProjectScope(project: RestProject): GitLabProjectScope {
     name: project.name,
     fullPath: project.path_with_namespace,
   };
+}
+
+function normalizeTimelogSummary(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
 }
 
 function dedupeRestIssues(issues: RestIssue[]) {

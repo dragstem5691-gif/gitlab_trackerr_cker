@@ -347,6 +347,7 @@ function computePeople(
             id: entry.id,
             spentAt: entry.spentAt,
             seconds: entry.timeSpentSeconds,
+            summary: entry.summary,
           }))
           .sort((left, right) => left.spentAt.localeCompare(right.spentAt));
 
