@@ -37,6 +37,11 @@ const TAB_META: Record<AppPage, { label: string; icon: ReactNode; shortcut: stri
     icon: <CalendarRange className="w-4 h-4" />,
     shortcut: 'Alt+3',
   },
+  ganttBuilderNew: {
+    label: 'Gantt New',
+    icon: <CalendarRange className="w-4 h-4" />,
+    shortcut: 'Alt+4',
+  },
 };
 
 export function AppShell({
@@ -65,6 +70,9 @@ export function AppShell({
         } else if (e.key === '3') {
           e.preventDefault();
           onChangePage('ganttBuilder');
+        } else if (e.key === '4') {
+          e.preventDefault();
+          onChangePage('ganttBuilderNew');
         }
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -76,7 +84,7 @@ export function AppShell({
     return () => window.removeEventListener('keydown', handler);
   }, [onChangePage, onOpenCommandPalette, canOpenReport, canOpenPlanning]);
 
-  const tabs: AppPage[] = ['report', 'planning', 'ganttBuilder'];
+  const tabs: AppPage[] = ['report', 'planning', 'ganttBuilder', 'ganttBuilderNew'];
 
   const disabledFor = (p: AppPage) => {
     if (p === 'report') return !canOpenReport;
@@ -141,6 +149,11 @@ export function AppShell({
                 >
                   {TAB_META[p].icon}
                   {TAB_META[p].label}
+                  {p === 'ganttBuilderNew' && (
+                    <span className="rounded bg-sky-100 px-1 py-0.5 text-[9px] font-bold uppercase text-sky-700">
+                      Beta
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -217,6 +230,11 @@ export function AppShell({
               >
                 {TAB_META[p].icon}
                 {TAB_META[p].label}
+                {p === 'ganttBuilderNew' && (
+                  <span className="rounded bg-sky-100 px-1 py-0.5 text-[9px] font-bold uppercase text-sky-700">
+                    Beta
+                  </span>
+                )}
               </button>
             );
           })}

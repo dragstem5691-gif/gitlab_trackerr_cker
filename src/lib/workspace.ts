@@ -4,7 +4,12 @@ import type { PlanningAssignments } from './planning';
 const WORKSPACE_VERSION = 1;
 const WORKSPACE_KIND = 'gtr-workspace';
 const GANTT_BUILDER_PREFIX = 'gtr.ganttBuilder';
+const GANTT_BUILDER_NEW_PREFIX = 'gtr.ganttBuilderNew';
 const FORM_KEYS_TO_IGNORE = new Set(['token']);
+
+function isOldGanttBuilderKey(key: string) {
+  return key.startsWith(GANTT_BUILDER_PREFIX) && !key.startsWith(GANTT_BUILDER_NEW_PREFIX);
+}
 
 export interface WorkspaceSnapshot {
   version: number;
@@ -14,6 +19,7 @@ export interface WorkspaceSnapshot {
   report: ReportResult | null;
   planningAssignments: PlanningAssignments;
   ganttBuilderPlans: Record<string, unknown>;
+  ganttBuilderNewPlans: Record<string, unknown>;
 }
 
 export interface WorkspaceCaptureInput {
@@ -24,15 +30,22 @@ export interface WorkspaceCaptureInput {
 
 export function captureWorkspace(input: WorkspaceCaptureInput): WorkspaceSnapshot {
   const ganttBuilderPlans: Record<string, unknown> = {};
+  const ganttBuilderNewPlans: Record<string, unknown> = {};
   for (let i = 0; i < window.localStorage.length; i += 1) {
     const key = window.localStorage.key(i);
-    if (!key || !key.startsWith(GANTT_BUILDER_PREFIX)) continue;
+    if (!key) continue;
     const raw = window.localStorage.getItem(key);
     if (!raw) continue;
+    const target = key.startsWith(GANTT_BUILDER_NEW_PREFIX)
+      ? ganttBuilderNewPlans
+      : isOldGanttBuilderKey(key)
+        ? ganttBuilderPlans
+        : null;
+    if (!target) continue;
     try {
-      ganttBuilderPlans[key] = JSON.parse(raw);
+      target[key] = JSON.parse(raw);
     } catch {
-      ganttBuilderPlans[key] = raw;
+      target[key] = raw;
     }
   }
 
@@ -47,6 +60,7 @@ export function captureWorkspace(input: WorkspaceCaptureInput): WorkspaceSnapsho
     report: input.report,
     planningAssignments: input.planningAssignments,
     ganttBuilderPlans,
+    ganttBuilderNewPlans,
   };
 }
 
@@ -77,18 +91,36 @@ export function parseWorkspace(source: string): WorkspaceSnapshot {
       parsed.ganttBuilderPlans && typeof parsed.ganttBuilderPlans === 'object'
         ? (parsed.ganttBuilderPlans as Record<string, unknown>)
         : {},
+    ganttBuilderNewPlans:
+      parsed.ganttBuilderNewPlans && typeof parsed.ganttBuilderNewPlans === 'object'
+        ? (parsed.ganttBuilderNewPlans as Record<string, unknown>)
+        : {},
   };
 }
 
 export function applyGanttBuilderPlans(plans: Record<string, unknown>) {
   for (let i = window.localStorage.length - 1; i >= 0; i -= 1) {
     const key = window.localStorage.key(i);
-    if (key && key.startsWith(GANTT_BUILDER_PREFIX)) {
+    if (key && isOldGanttBuilderKey(key)) {
       window.localStorage.removeItem(key);
     }
   }
   for (const [key, value] of Object.entries(plans)) {
-    if (!key.startsWith(GANTT_BUILDER_PREFIX)) continue;
+    if (!isOldGanttBuilderKey(key)) continue;
+    const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+    window.localStorage.setItem(key, serialized);
+  }
+}
+
+export function applyGanttBuilderNewPlans(plans: Record<string, unknown>) {
+  for (let i = window.localStorage.length - 1; i >= 0; i -= 1) {
+    const key = window.localStorage.key(i);
+    if (key && key.startsWith(GANTT_BUILDER_NEW_PREFIX)) {
+      window.localStorage.removeItem(key);
+    }
+  }
+  for (const [key, value] of Object.entries(plans)) {
+    if (!key.startsWith(GANTT_BUILDER_NEW_PREFIX)) continue;
     const serialized = typeof value === 'string' ? value : JSON.stringify(value);
     window.localStorage.setItem(key, serialized);
   }

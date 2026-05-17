@@ -1,1 +1,1 @@
-export type AppPage = 'report' | 'planning' | 'ganttBuilder';
+export type AppPage = 'report' | 'planning' | 'ganttBuilder' | 'ganttBuilderNew';

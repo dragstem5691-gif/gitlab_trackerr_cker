@@ -5,6 +5,7 @@ import { ReportView } from './components/ReportView';
 import { BuildLog } from './components/BuildLog';
 import { PlanningBuilderView } from './components/PlanningBuilderView';
 import { GanttBuilderView } from './components/GanttBuilderView';
+import { GanttBuilderNewView } from './components/GanttBuilderNewView';
 import { AppShell } from './components/AppShell';
 import { CommandPalette, type CommandAction } from './components/CommandPalette';
 import { ActivityDrawer } from './components/ActivityDrawer';
@@ -19,6 +20,7 @@ import {
 } from './lib/planning';
 import { parseInstanceOrigin, parseProjectPath } from './lib/time';
 import {
+  applyGanttBuilderNewPlans,
   applyGanttBuilderPlans,
   captureWorkspace,
   downloadWorkspaceFile,
@@ -332,7 +334,10 @@ function App() {
     if (page === 'report') crumbs.push('Report');
     if (page === 'planning') crumbs.push('Report', 'Planning');
     if (page === 'ganttBuilder') crumbs.push('Gantt Builder');
-    if (report && page !== 'ganttBuilder') crumbs.push(getReportScopeLabel(report));
+    if (page === 'ganttBuilderNew') crumbs.push('Gantt Builder New', 'Beta');
+    if (report && page !== 'ganttBuilder' && page !== 'ganttBuilderNew') {
+      crumbs.push(getReportScopeLabel(report));
+    }
     return crumbs;
   }, [page, report]);
 
@@ -360,6 +365,13 @@ function App() {
         hint: 'Build and edit the Gantt plan',
         shortcut: 'Alt+3',
         onRun: () => setPage('ganttBuilder'),
+      },
+      {
+        id: 'nav.gantt-new',
+        label: 'Go to Gantt Builder New',
+        hint: 'Open the beta planning workspace',
+        shortcut: 'Alt+4',
+        onRun: () => setPage('ganttBuilderNew'),
       },
       {
         id: 'action.connect',
@@ -423,6 +435,7 @@ function App() {
         setFormSnapshot(mergedForm);
         setDiscoveredSubgroups([]);
         applyGanttBuilderPlans(snapshot.ganttBuilderPlans ?? {});
+        applyGanttBuilderNewPlans(snapshot.ganttBuilderNewPlans ?? {});
         setReport(snapshot.report ?? null);
         setPlanningAssignments(snapshot.planningAssignments ?? {});
         setError(null);
@@ -456,7 +469,9 @@ function App() {
     >
       <main
         className={`mx-auto px-4 py-6 sm:px-6 ${
-          page === 'ganttBuilder' ? 'max-w-[1440px] space-y-5' : 'max-w-6xl space-y-6'
+          page === 'ganttBuilder' || page === 'ganttBuilderNew'
+            ? 'max-w-[1440px] space-y-5'
+            : 'max-w-6xl space-y-6'
         } ${hasLogs ? 'pb-24' : ''}`}
       >
         {page === 'report' && !report && !loading && !connectionOpen && (
@@ -501,6 +516,15 @@ function App() {
             report={report}
             gitLabConfig={ganttGitLabConfig}
             onBack={() => setPage('report')}
+          />
+        )}
+
+        {page === 'ganttBuilderNew' && (
+          <GanttBuilderNewView
+            report={report}
+            gitLabConfig={ganttGitLabConfig}
+            onBack={() => setPage('report')}
+            onOpenClassic={() => setPage('ganttBuilder')}
           />
         )}
       </main>
