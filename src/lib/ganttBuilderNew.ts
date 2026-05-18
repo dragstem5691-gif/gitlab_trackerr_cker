@@ -12,8 +12,8 @@ import {
 } from './ganttBuilder';
 import type { ReportResult } from '../types';
 
-export type GanttBuilderNewZoom = 'day' | 'week' | 'month';
-export type GanttBuilderNewPanel = 'workload' | 'conflicts';
+export type GanttBuilderNewZoom = 'hours' | 'day' | 'week' | 'month';
+export type GanttBuilderNewPanel = 'plan' | 'workload' | 'conflicts';
 
 export interface GanttBuilderNewViewSettings {
   zoom: GanttBuilderNewZoom;
@@ -53,7 +53,7 @@ const STORAGE_PREFIX = 'gtr.ganttBuilderNew';
 
 export const DEFAULT_GANTT_BUILDER_NEW_VIEW: GanttBuilderNewViewSettings = {
   zoom: 'week',
-  panel: 'workload',
+  panel: 'plan',
   showWeekends: true,
 };
 
